@@ -99,6 +99,7 @@ export function buildExternalPromptTemplate(config: AppConfig, demand: string): 
     '4. messages 与 searchTips 只保留少量高价值的新手提醒。',
     '5. 如果某节点不能直接右键搜到，要写清需要从组件或 Pin 拖线，或先 Add Timeline / Add Custom Event / Promote to Variable。',
     '6. variables 只列必要变量，并注明 instanceEditable、exposeOnSpawn、promoteFromNode、reason。',
+    '7. 注意输出要严格按照json格式，比如不得出现空值四个双引号（""""）的情况',
     '',
     `需求：${demand || '[在这里填写你的蓝图需求]'}`,
   ].join('\n');

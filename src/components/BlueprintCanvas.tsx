@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import {
   Background,
   Controls,
@@ -26,22 +26,30 @@ export function BlueprintCanvas({
   selectedNodeId,
   onSelectNode,
 }: BlueprintCanvasProps) {
-  const computedNodes = useMemo(
-    () => toFlowNodes(plan, selectedNodeId),
-    [plan, selectedNodeId],
-  );
-  const computedEdges = useMemo(() => toFlowEdges(plan), [plan]);
+  const planRef = useRef(plan);
+  const initialNodes = useMemo(() => toFlowNodes(plan, selectedNodeId), []);
+  const initialEdges = useMemo(() => toFlowEdges(plan), []);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(computedNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(computedEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
+  // Reset nodes+edges only when the plan itself changes (new generation / import)
   useEffect(() => {
-    setNodes(computedNodes);
-  }, [computedNodes, setNodes]);
+    if (planRef.current === plan) return;
+    planRef.current = plan;
+    setNodes(toFlowNodes(plan, selectedNodeId));
+    setEdges(toFlowEdges(plan));
+  }, [plan]);
 
+  // When selection changes, only update the `selected` flag — preserve positions
   useEffect(() => {
-    setEdges(computedEdges);
-  }, [computedEdges, setEdges]);
+    setNodes((prev) =>
+      prev.map((n) => ({
+        ...n,
+        data: { ...n.data, selected: n.id === selectedNodeId },
+      })),
+    );
+  }, [selectedNodeId]);
 
   return (
     <div className="canvas-shell">

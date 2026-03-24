@@ -1201,3 +1201,84 @@ textarea:focus {
     transform: translateY(0);
   }
 }
+
+/* ── Compact pill node ── */
+.bp-node--compact {
+  width: auto;
+  min-width: 160px;
+  max-width: 280px;
+  border-radius: 999px;
+  padding: 0;
+  background: linear-gradient(135deg, #18202c 0%, #10161f 100%);
+}
+
+.bp-node--compact.is-selected {
+  box-shadow:
+    0 0 0 1px rgba(89, 192, 255, 0.75),
+    0 0 0 5px rgba(89, 192, 255, 0.14),
+    0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.bp-node__compact-inner {
+  padding: 7px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bp-node__compact-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bp-node__compact-header .bp-node__category {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  color: var(--node-accent, var(--accent));
+}
+
+.bp-node__compact-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.bp-node__compact-pins {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.bp-node__compact-pin {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.bp-node__compact-pin .bp-node__pin-name {
+  font-size: 10px;
+  color: var(--text);
+  opacity: 0.85;
+}
+
+.bp-node__compact-pin .bp-node__pin-type {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.bp-node__compact-pin--out .bp-node__pin-name {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.bp-node__compact-arrow {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.6;
+}

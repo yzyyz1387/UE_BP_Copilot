@@ -313,7 +313,7 @@ export function toFlowEdges(plan: BlueprintPlan): Edge[] {
       sourceHandle: link.fromPinId,
       targetHandle: link.toPinId,
       label: link.label || undefined,
-      type: 'smoothstep',
+      type: 'default',
       animated: false,
       style: {
         stroke: color,

@@ -49,19 +49,6 @@ export function ChatPanel({
         ))}
       </div>
 
-      <div className="preset-row">
-        {presets.map((preset) => (
-          <button
-            key={preset}
-            type="button"
-            className="chip-button"
-            onClick={() => onUsePreset(preset)}
-          >
-            {preset}
-          </button>
-        ))}
-      </div>
-
       <label className="form-field">
         <span>你的需求</span>
         <textarea
