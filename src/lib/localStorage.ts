@@ -40,3 +40,24 @@ export function storeConfig(config: AppConfig): void {
     // ignore localStorage write failure
   }
 }
+
+const PLAN_KEY = 'ue-blueprint-ai-studio:plan';
+
+export function loadStoredPlan(): unknown | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(PLAN_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storePlan(plan: unknown): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(PLAN_KEY, JSON.stringify(plan));
+  } catch {
+    // ignore
+  }
+}

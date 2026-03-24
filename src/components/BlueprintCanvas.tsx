@@ -88,7 +88,7 @@ export function BlueprintCanvas({
       >
         <Background gap={24} size={1} />
         <MiniMap zoomable pannable />
-        <Controls />
+        <Controls showInteractive={false} />
       </ReactFlow>
     </div>
   );

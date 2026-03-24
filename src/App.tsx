@@ -7,7 +7,7 @@ import { InspectorTabs, type InspectorTab } from './components/InspectorTabs';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Toast, useToast } from './components/Toast';
 import { DEMO_BLUEPRINT } from './data/demoBlueprint';
-import { loadStoredConfig, storeConfig } from './lib/localStorage';
+import { loadStoredConfig, storeConfig, loadStoredPlan, storePlan } from './lib/localStorage';
 import { normalizeBlueprintPlan } from './lib/blueprintTransform';
 import { generateBlueprintPlan } from './lib/openaiClient';
 import { buildExternalPromptTemplate } from './lib/prompt';
@@ -82,9 +82,18 @@ async function copyToClipboard(text: string): Promise<void> {
 export default function App() {
   const { toasts, show: showToast, dismiss: dismissToast } = useToast();
   const [config, setConfig] = useState<AppConfig>(() => loadStoredConfig(DEFAULT_CONFIG));
-  const [plan, setPlan] = useState<BlueprintPlan>(DEMO_BLUEPRINT);
-  const [rawJson, setRawJson] = useState<string>(JSON.stringify(DEMO_BLUEPRINT, null, 2));
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(DEMO_BLUEPRINT.nodes[0]?.id ?? null);
+  const [plan, setPlan] = useState<BlueprintPlan>(() => {
+    const stored = loadStoredPlan();
+    if (stored) {
+      try { return normalizeBlueprintPlan(stored); } catch { /* fall through */ }
+    }
+    return DEMO_BLUEPRINT;
+  });
+  const [rawJson, setRawJson] = useState<string>(() => JSON.stringify(
+    (() => { const s = loadStoredPlan(); if (s) { try { return normalizeBlueprintPlan(s); } catch { /**/ } } return DEMO_BLUEPRINT; })(),
+    null, 2,
+  ));
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(plan.nodes[0]?.id ?? null);
   const [activeTab, setActiveTab] = useState<InspectorTab>('notes');
   const [prompt, setPrompt] = useState<string>('做一个按下 E 打开门的 Actor 蓝图');
   const [importText, setImportText] = useState('');
@@ -97,6 +106,7 @@ export default function App() {
   const [endpointLabel, setEndpointLabel] = useState('');
 
   useEffect(() => { storeConfig(config); }, [config]);
+  useEffect(() => { storePlan(plan); }, [plan]);
 
   const selectedNode = useMemo(
     () => plan.nodes.find((n) => n.id === selectedNodeId) ?? null,
