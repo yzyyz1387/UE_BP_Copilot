@@ -1,5 +1,6 @@
 import type { Edge, Node } from '@xyflow/react';
 import { MarkerType } from '@xyflow/react';
+import dagre from 'dagre';
 import type {
   AdviceLevel,
   BlueprintFlowNodeData,
@@ -299,6 +300,41 @@ export function toFlowNodes(
     draggable: true,
     selectable: true,
   }));
+}
+
+/** Auto-layout nodes using dagre when positions overlap or are invalid */
+export function autoLayoutNodes(
+  nodes: Node<BlueprintFlowNodeData>[],
+  edges: Edge[],
+): Node<BlueprintFlowNodeData>[] {
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: 'LR', nodesep: 80, ranksep: 180 });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  nodes.forEach((node) => {
+    // Estimate node size (compact vs full)
+    const isCompact = node.data.inputs.length <= 1 && node.data.outputs.length <= 1;
+    const width = isCompact ? 200 : 300;
+    const height = isCompact ? 60 : Math.max(node.data.inputs.length, node.data.outputs.length, 1) * 48 + 120;
+    g.setNode(node.id, { width, height });
+  });
+
+  edges.forEach((edge) => {
+    g.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(g);
+
+  return nodes.map((node) => {
+    const positioned = g.node(node.id);
+    return {
+      ...node,
+      position: {
+        x: positioned.x - positioned.width / 2,
+        y: positioned.y - positioned.height / 2,
+      },
+    };
+  });
 }
 
 export function toFlowEdges(plan: BlueprintPlan): Edge[] {

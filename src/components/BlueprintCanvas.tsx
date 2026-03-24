@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Background,
   Controls,
@@ -6,8 +6,10 @@ import {
   ReactFlow,
   useEdgesState,
   useNodesState,
+  type NodeChange,
 } from '@xyflow/react';
-import { toFlowEdges, toFlowNodes } from '../lib/blueprintTransform';
+import { toFlowEdges, toFlowNodes, autoLayoutNodes } from '../lib/blueprintTransform';
+import { loadStoredPositions, storePositions } from '../lib/localStorage';
 import type { BlueprintPlan } from '../types';
 import BlueprintNode from './BlueprintNode';
 
@@ -27,21 +29,58 @@ export function BlueprintCanvas({
   onSelectNode,
 }: BlueprintCanvasProps) {
   const planRef = useRef(plan);
-  const initialNodes = useMemo(() => toFlowNodes(plan, selectedNodeId), []);
+  
+  const initialNodes = useMemo(() => {
+    const baseNodes = toFlowNodes(plan, selectedNodeId);
+    const edges = toFlowEdges(plan);
+    const storedPositions = loadStoredPositions();
+
+    // Apply stored positions if available
+    if (storedPositions) {
+      const withStoredPos = baseNodes.map((n) =>
+        storedPositions[n.id] ? { ...n, position: storedPositions[n.id] } : n,
+      );
+      // Check if all nodes have valid stored positions
+      const allHaveStored = withStoredPos.every((n) => storedPositions[n.id]);
+      if (allHaveStored) return withStoredPos;
+    }
+
+    // Otherwise auto-layout
+    return autoLayoutNodes(baseNodes, edges);
+  }, []);
+
   const initialEdges = useMemo(() => toFlowEdges(plan), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-  // Reset nodes+edges only when the plan itself changes (new generation / import)
+  // Reset nodes+edges when plan changes (new generation / import)
   useEffect(() => {
     if (planRef.current === plan) return;
     planRef.current = plan;
-    setNodes(toFlowNodes(plan, selectedNodeId));
-    setEdges(toFlowEdges(plan));
-  }, [plan]);
+    
+    const baseNodes = toFlowNodes(plan, selectedNodeId);
+    const newEdges = toFlowEdges(plan);
+    const storedPositions = loadStoredPositions();
 
-  // When selection changes, only update the `selected` flag — preserve positions
+    let finalNodes = baseNodes;
+    if (storedPositions) {
+      finalNodes = baseNodes.map((n) =>
+        storedPositions[n.id] ? { ...n, position: storedPositions[n.id] } : n,
+      );
+      const allHaveStored = finalNodes.every((n) => storedPositions[n.id]);
+      if (!allHaveStored) {
+        finalNodes = autoLayoutNodes(baseNodes, newEdges);
+      }
+    } else {
+      finalNodes = autoLayoutNodes(baseNodes, newEdges);
+    }
+
+    setNodes(finalNodes);
+    setEdges(newEdges);
+  }, [plan, selectedNodeId, setNodes, setEdges]);
+
+  // When selection changes, only update the `selected` flag
   useEffect(() => {
     setNodes((prev) =>
       prev.map((n) => ({
@@ -49,7 +88,31 @@ export function BlueprintCanvas({
         data: { ...n.data, selected: n.id === selectedNodeId },
       })),
     );
-  }, [selectedNodeId]);
+  }, [selectedNodeId, setNodes]);
+
+  // Persist positions when nodes are dragged
+  const handleNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      onNodesChange(changes);
+      
+      // Extract position changes and persist
+      const positionChanges = changes.filter(
+        (c) => c.type === 'position' && c.dragging === false && c.position,
+      );
+      
+      if (positionChanges.length > 0) {
+        setNodes((currentNodes) => {
+          const positions: Record<string, { x: number; y: number }> = {};
+          currentNodes.forEach((n) => {
+            positions[n.id] = n.position;
+          });
+          storePositions(positions);
+          return currentNodes;
+        });
+      }
+    },
+    [onNodesChange, setNodes],
+  );
 
   return (
     <div className="canvas-shell">
@@ -72,7 +135,7 @@ export function BlueprintCanvas({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
+        onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={(_, node) => onSelectNode(node.id)}
         onPaneClick={() => onSelectNode(null)}
@@ -88,7 +151,7 @@ export function BlueprintCanvas({
       >
         <Background gap={24} size={1} />
         <MiniMap zoomable pannable />
-        <Controls showInteractive={false} />
+        <Controls />
       </ReactFlow>
     </div>
   );

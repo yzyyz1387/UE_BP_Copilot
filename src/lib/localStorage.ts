@@ -61,3 +61,24 @@ export function storePlan(plan: unknown): void {
     // ignore
   }
 }
+
+const POSITIONS_KEY = 'ue-blueprint-ai-studio:positions';
+
+export function loadStoredPositions(): Record<string, { x: number; y: number }> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(POSITIONS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storePositions(positions: Record<string, { x: number; y: number }>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(POSITIONS_KEY, JSON.stringify(positions));
+  } catch {
+    // ignore
+  }
+}
