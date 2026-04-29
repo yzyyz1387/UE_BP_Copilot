@@ -55,7 +55,7 @@ export function ChatPanel({
           className="prompt-textarea"
           value={prompt}
           onChange={(event) => onPromptChange(event.target.value)}
-          placeholder="例如：做一个按下 E 打开门的 Actor 蓝图，说明哪些节点要从组件或 Pin 拖线添加。"
+          placeholder="例如：在 默认用户/投掷物 文件夹中新建 BP_GasGrenade 毒气弹蓝图；或基于当前蓝图继续修改。"
           onKeyDown={(event) => {
             if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
               event.preventDefault();

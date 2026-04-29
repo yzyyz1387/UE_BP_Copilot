@@ -119,8 +119,35 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-export interface GenerationResult {
+export type BlueprintOperationAction =
+  | 'replace_current_blueprint'
+  | 'create_blueprint'
+  | 'update_blueprint';
+
+export interface BlueprintOperationTarget {
+  /** 已知项目 id。新建时留空；当前蓝图可写 active。 */
+  projectId: string;
+  userName: string;
+  folderPath: string;
+  blueprintName: string;
+}
+
+export interface BlueprintWorkspaceOperation {
+  id: string;
+  action: BlueprintOperationAction;
+  target: BlueprintOperationTarget;
+  selectAfterApply: boolean;
   plan: BlueprintPlan;
+}
+
+export interface BlueprintWorkspaceResponse {
+  responseType: 'blueprint_workspace_operation';
+  assistantReply: string;
+  operations: BlueprintWorkspaceOperation[];
+}
+
+export interface GenerationResult {
+  response: BlueprintWorkspaceResponse;
   rawText: string;
   endpointLabel: string;
 }

@@ -19,7 +19,16 @@ import {
 import { normalizeBlueprintPlan } from './lib/blueprintTransform';
 import { generateBlueprintPlan } from './lib/openaiClient';
 import { buildExternalPromptTemplate } from './lib/prompt';
-import type { AppConfig, BlueprintLibrary, BlueprintPlan, ChatMessage } from './types';
+import { normalizeBlueprintWorkspaceResponse } from './lib/workspaceResponse';
+import type {
+  AppConfig,
+  BlueprintLibrary,
+  BlueprintOperationTarget,
+  BlueprintPlan,
+  BlueprintProject,
+  BlueprintWorkspaceResponse,
+  ChatMessage,
+} from './types';
 
 const DEFAULT_CONFIG: AppConfig = {
   baseUrl: 'https://api.openai.com/v1',
@@ -36,8 +45,8 @@ const DEFAULT_CONFIG: AppConfig = {
 
 const PRESET_PROMPTS = [
   '做一个按下 E 打开门的 Actor 蓝图',
-  '做一个角色按 Shift 奔跑的 Character 蓝图',
-  '做一个 Widget 按钮切换面板显示隐藏',
+  '在 默认用户/投掷物 文件夹中新建 BP_GasGrenade 毒气弹蓝图',
+  '创建两个蓝图：BP_Grenade_Base 和 BP_GasGrenade，放到 默认用户/投掷物 文件夹',
   '基于当前图，改成按一次打开，再按一次关闭',
 ];
 
@@ -91,6 +100,54 @@ function findActivePlan(library: BlueprintLibrary): BlueprintPlan {
   return library.projects.find((project) => project.id === library.activeProjectId)?.plan ?? library.projects[0]?.plan ?? DEMO_BLUEPRINT;
 }
 
+function cleanText(value: string | undefined, fallback: string): string {
+  const text = value?.trim();
+  return text || fallback;
+}
+
+function getProjectPath(project: Pick<BlueprintProject, 'userName' | 'folderPath' | 'name'>): string {
+  return `${project.userName} / ${project.folderPath} / ${project.name}`;
+}
+
+function findProjectByTarget(
+  projects: BlueprintProject[],
+  activeProjectId: string,
+  target: BlueprintOperationTarget,
+): BlueprintProject | undefined {
+  const targetProjectId = target.projectId.trim();
+  if (targetProjectId === 'active') {
+    return projects.find((project) => project.id === activeProjectId);
+  }
+  if (targetProjectId) {
+    const matchedById = projects.find((project) => project.id === targetProjectId);
+    if (matchedById) return matchedById;
+  }
+
+  const targetUserName = target.userName.trim();
+  const targetFolderPath = target.folderPath.trim();
+  const targetBlueprintName = target.blueprintName.trim();
+  if (!targetUserName || !targetFolderPath || !targetBlueprintName) {
+    return undefined;
+  }
+
+  return projects.find(
+    (project) =>
+      project.userName === targetUserName &&
+      project.folderPath === targetFolderPath &&
+      project.name === targetBlueprintName,
+  );
+}
+
+function withPlanTitle(plan: BlueprintPlan, title: string): BlueprintPlan {
+  return normalizeBlueprintPlan({
+    ...plan,
+    meta: {
+      ...plan.meta,
+      title: plan.meta.title?.trim() || title,
+    },
+  });
+}
+
 export default function App() {
   const { toasts, show: showToast, dismiss: dismissToast } = useToast();
   const [config, setConfig] = useState<AppConfig>(() => loadStoredConfig(DEFAULT_CONFIG));
@@ -103,7 +160,7 @@ export default function App() {
   const [prompt, setPrompt] = useState<string>('做一个按下 E 打开门的 Actor 蓝图');
   const [importText, setImportText] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
-    createMessage('assistant', '欢迎使用本地优先的 UE5 蓝图 AI 工作台。你可以创建不同用户/文件夹的蓝图，也可以直接描述需求生成节点图。'),
+    createMessage('assistant', '欢迎使用本地优先的 UE5 蓝图 AI 工作台。你可以创建不同用户/文件夹的蓝图，也可以让 AI 返回工作区操作自动新建或更新蓝图。'),
     createMessage('assistant', findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT)).assistantReply),
   ]);
   const [busy, setBusy] = useState(false);
@@ -161,6 +218,119 @@ export default function App() {
     savePlanToActiveProject(nextPlan);
     setEndpointLabel(sourceLabel);
     setCurrentPlan(nextPlan, `已更新：${nextPlan.meta.title}`, assistantText);
+  };
+
+  const applyWorkspaceResponse = (response: BlueprintWorkspaceResponse, sourceLabel: string) => {
+    if (response.operations.length === 0) {
+      showToast('AI 返回中没有可执行的蓝图操作。', 'error');
+      return;
+    }
+
+    let nextProjects: BlueprintProject[] = [...library.projects];
+    let activeProjectId = library.activeProjectId;
+    let selectedProjectId = library.activeProjectId;
+    let lastAppliedProjectId = library.activeProjectId;
+    let hasExplicitSelection = false;
+    const descriptions: string[] = [];
+    const now = new Date().toISOString();
+
+    const findCurrentActive = () =>
+      nextProjects.find((project) => project.id === activeProjectId) ?? nextProjects[0];
+
+    const markSelection = (projectId: string, explicit: boolean) => {
+      lastAppliedProjectId = projectId;
+      if (explicit || !hasExplicitSelection) {
+        selectedProjectId = projectId;
+      }
+      if (explicit) {
+        hasExplicitSelection = true;
+      }
+    };
+
+    response.operations.forEach((operation, index) => {
+      const currentActive = findCurrentActive();
+      const normalizedPlan = normalizeBlueprintPlan(operation.plan);
+      const fallbackName = normalizedPlan.meta.title || currentActive?.name || `AI 蓝图 ${index + 1}`;
+      const targetName = cleanText(operation.target.blueprintName, fallbackName);
+      const targetUserName = cleanText(operation.target.userName, currentActive?.userName || '默认用户');
+      const targetFolderPath = cleanText(operation.target.folderPath, currentActive?.folderPath || 'AI 生成');
+      const targetPlan = withPlanTitle(normalizedPlan, targetName);
+
+      if (operation.action === 'create_blueprint') {
+        const project = createBlueprintProject(targetPlan, {
+          name: targetName,
+          userName: targetUserName,
+          folderPath: targetFolderPath,
+        });
+        nextProjects = [...nextProjects, project];
+        descriptions.push(`新建：${getProjectPath(project)}`);
+        markSelection(project.id, operation.selectAfterApply);
+        return;
+      }
+
+      const matchedProject = operation.action === 'replace_current_blueprint'
+        ? currentActive
+        : findProjectByTarget(nextProjects, activeProjectId, operation.target);
+
+      if (!matchedProject) {
+        const project = createBlueprintProject(targetPlan, {
+          name: targetName,
+          userName: targetUserName,
+          folderPath: targetFolderPath,
+        });
+        nextProjects = [...nextProjects, project];
+        descriptions.push(`新建：${getProjectPath(project)}（未匹配到可更新蓝图）`);
+        markSelection(project.id, operation.selectAfterApply);
+        return;
+      }
+
+      const shouldPreserveActiveLocation =
+        operation.action === 'replace_current_blueprint' && operation.target.projectId.trim() === 'active';
+      const updatedProject: BlueprintProject = {
+        ...matchedProject,
+        name: targetName || matchedProject.name,
+        userName: shouldPreserveActiveLocation
+          ? matchedProject.userName
+          : targetUserName || matchedProject.userName,
+        folderPath: shouldPreserveActiveLocation
+          ? matchedProject.folderPath
+          : targetFolderPath || matchedProject.folderPath,
+        updatedAt: now,
+        plan: targetPlan,
+      };
+
+      nextProjects = nextProjects.map((project) =>
+        project.id === matchedProject.id ? updatedProject : project,
+      );
+      activeProjectId = operation.action === 'replace_current_blueprint' ? updatedProject.id : activeProjectId;
+      descriptions.push(`${operation.action === 'update_blueprint' ? '更新' : '覆盖'}：${getProjectPath(updatedProject)}`);
+      markSelection(updatedProject.id, operation.selectAfterApply || operation.action === 'replace_current_blueprint');
+    });
+
+    if (!hasExplicitSelection) {
+      selectedProjectId = lastAppliedProjectId;
+    }
+
+    const selectedProject = nextProjects.find((project) => project.id === selectedProjectId) ?? nextProjects[0];
+    if (!selectedProject) {
+      showToast('AI 操作执行失败：没有可打开的蓝图。', 'error');
+      return;
+    }
+
+    const nextLibrary: BlueprintLibrary = {
+      version: 1,
+      activeProjectId: selectedProject.id,
+      projects: nextProjects,
+    };
+    const selectedPlan = normalizeBlueprintPlan(selectedProject.plan);
+    const status = descriptions.length > 1
+      ? `已执行 ${descriptions.length} 个 AI 蓝图操作`
+      : descriptions[0] || `已打开：${selectedProject.name}`;
+
+    setLibrary(nextLibrary);
+    setEndpointLabel(sourceLabel);
+    setCurrentPlan(selectedPlan, status, response.assistantReply || selectedPlan.assistantReply);
+    showToast(status, 'success');
   };
 
   const handleSelectProject = (projectId: string) => {
@@ -278,7 +448,8 @@ export default function App() {
   const handleApplyImport = () => {
     try {
       const parsed = JSON.parse(extractJsonString(importText));
-      applyPlan(normalizeBlueprintPlan(parsed), '导入 JSON', '已导入外部 JSON，并更新为当前蓝图。');
+      const workspaceResponse = normalizeBlueprintWorkspaceResponse(parsed);
+      applyWorkspaceResponse(workspaceResponse, '导入工作区 JSON');
     } catch (reason) {
       showToast(`导入 JSON 失败：${reason instanceof Error ? reason.message : '未知错误'}`, 'error');
       setStatusText('导入失败');
@@ -299,11 +470,11 @@ export default function App() {
     const history = [...messages, userMessage];
     setMessages(history);
     setBusy(true);
-    setStatusText('正在调用模型生成蓝图...');
+    setStatusText('正在调用模型生成蓝图工作区操作...');
 
     try {
-      const result = await generateBlueprintPlan({ config, userPrompt, currentPlan: plan, history });
-      applyPlan(result.plan, result.endpointLabel, result.plan.assistantReply);
+      const result = await generateBlueprintPlan({ config, userPrompt, currentPlan: plan, history, library });
+      applyWorkspaceResponse(result.response, result.endpointLabel);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : '生成失败';
       showToast(message, 'error');

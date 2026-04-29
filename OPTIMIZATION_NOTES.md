@@ -10,9 +10,11 @@
 6. 压缩圆角、边框、内外边距和字体大小，减少装饰性卡片留白，让同屏展示内容更多。
 7. 将可见英文品牌文案改为中文：页面标题、顶部标题、README、提示词区域等。
 8. 优化系统提示词和外部提示词模板，要求模型输出 UE5 常见 category、nodeType 和 Pin dataType，便于前端按 UE5 风格渲染。
+9. 新增 AI 工作区操作协议 `BlueprintWorkspaceResponse`：模型可以返回 `replace_current_blueprint`、`create_blueprint`、`update_blueprint`，前端会识别并自动覆盖当前蓝图、创建新蓝图或更新已有蓝图。
+10. 导入区兼容新版工作区操作 JSON 和旧版单蓝图 JSON；旧版单蓝图会自动包装为覆盖当前蓝图操作。
+11. 生成提示词会把当前蓝图库摘要传给模型，便于模型判断应该更新已有蓝图还是创建到指定用户/文件夹。
 
 验证情况：
 
-- 已使用 TypeScript transpileModule 对关键 TS/TSX 文件做语法检查。
-- 已用 PostCSS 解析 `src/styles.css`，CSS 语法通过。
+- 已使用 TypeScript `transpileModule` 对 19 个 TS/TSX 文件做语法检查。
 - 当前沙盒环境无法完成 `npm ci` / `npm run build`，因为项目依赖没有随压缩包提供且在线安装命令超时；请在本地有网络环境下执行 `npm install && npm run build` 做最终构建验证。

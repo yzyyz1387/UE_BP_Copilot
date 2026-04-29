@@ -1,13 +1,14 @@
-import { OUTPUT_SHAPE_GUIDE, SYSTEM_PROMPT, UE_BLUEPRINT_PLAN_SCHEMA } from '../schema';
-import type { AppConfig, BlueprintPlan, GenerationResult, ChatMessage } from '../types';
-import { normalizeBlueprintPlan } from './blueprintTransform';
+import { OUTPUT_SHAPE_GUIDE, SYSTEM_PROMPT, UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA } from '../schema';
+import type { AppConfig, BlueprintLibrary, BlueprintPlan, BlueprintWorkspaceResponse, ChatMessage, GenerationResult } from '../types';
 import { buildGenerationPrompt } from './prompt';
+import { normalizeBlueprintWorkspaceResponse } from './workspaceResponse';
 
 interface GenerateArgs {
   config: AppConfig;
   userPrompt: string;
   currentPlan: BlueprintPlan;
   history: ChatMessage[];
+  library: BlueprintLibrary;
 }
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -69,15 +70,12 @@ function extractJsonString(text: string): string {
   throw new Error('无法从模型返回中提取 JSON。');
 }
 
-function parsePlan(rawText: string, structured?: unknown): BlueprintPlan {
+function parseWorkspaceResponse(rawText: string, structured?: unknown): BlueprintWorkspaceResponse {
   if (structured && typeof structured === 'object') {
-    const candidate = structured as Partial<BlueprintPlan>;
-    if (candidate.meta && Array.isArray(candidate.nodes)) {
-      return normalizeBlueprintPlan(candidate);
-    }
+    return normalizeBlueprintWorkspaceResponse(structured);
   }
 
-  return normalizeBlueprintPlan(JSON.parse(extractJsonString(rawText)));
+  return normalizeBlueprintWorkspaceResponse(JSON.parse(extractJsonString(rawText)));
 }
 
 function extractTextFromResponseApi(data: unknown): string {
@@ -149,9 +147,11 @@ function buildCompatPrompt(prompt: string): string {
     '兼容模式要求：',
     '1. 只返回一个 JSON 对象。',
     '2. 不要输出 Markdown，不要输出注释。',
-    '3. assistantReply 要简短，不要逐节点解释。',
-    '4. node.comment 默认空字符串，只有关键节点才填写短注释。',
-    '5. 字段结构必须满足：',
+    '3. 根对象必须是 BlueprintWorkspaceResponse：responseType 固定为 blueprint_workspace_operation，operations 至少一项。',
+    '4. 如果要覆盖当前蓝图，返回 action=replace_current_blueprint；如果要新增到用户/文件夹，返回 action=create_blueprint。',
+    '5. 每个 operation.plan 都必须是完整 BlueprintPlan，assistantReply 要简短，不要逐节点解释。',
+    '6. node.comment 默认空字符串，只有关键节点才填写短注释。',
+    '7. 字段结构必须满足：',
     OUTPUT_SHAPE_GUIDE,
   ].join('\n');
 }
@@ -179,9 +179,9 @@ async function requestByResponses(
       text: {
         format: {
           type: 'json_schema',
-          name: 'ue_blueprint_plan',
+          name: 'ue_blueprint_workspace_response',
           strict: true,
-          schema: UE_BLUEPRINT_PLAN_SCHEMA,
+          schema: UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA,
         },
       },
     })) as {
@@ -190,15 +190,15 @@ async function requestByResponses(
       output?: unknown[];
     };
 
-    const plan = parsePlan(extractTextFromResponseApi(data), data.output_parsed);
+    const response = parseWorkspaceResponse(extractTextFromResponseApi(data), data.output_parsed);
     return {
-      plan,
-      rawText: JSON.stringify(data.output_parsed ?? plan, null, 2),
-      endpointLabel: '/responses · schema',
+      response,
+      rawText: JSON.stringify(data.output_parsed ?? response, null, 2),
+      endpointLabel: '/responses · workspace schema',
     };
   } catch (error) {
     if (!config.allowJsonFallback) {
-      throw decorateError(error, '/responses · schema');
+      throw decorateError(error, '/responses · workspace schema');
     }
   }
 
@@ -215,14 +215,14 @@ async function requestByResponses(
     });
 
     const rawText = extractTextFromResponseApi(fallbackData);
-    const plan = parsePlan(rawText);
+    const response = parseWorkspaceResponse(rawText);
     return {
-      plan,
-      rawText: rawText || JSON.stringify(plan, null, 2),
-      endpointLabel: '/responses · json-only fallback',
+      response,
+      rawText: rawText || JSON.stringify(response, null, 2),
+      endpointLabel: '/responses · workspace json fallback',
     };
   } catch (error) {
-    throw decorateError(error, '/responses · json-only fallback');
+    throw decorateError(error, '/responses · workspace json fallback');
   }
 }
 
@@ -242,23 +242,23 @@ async function requestByChatCompletions(
       response_format: {
         type: 'json_schema',
         json_schema: {
-          name: 'ue_blueprint_plan',
+          name: 'ue_blueprint_workspace_response',
           strict: true,
-          schema: UE_BLUEPRINT_PLAN_SCHEMA,
+          schema: UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA,
         },
       },
     });
 
     const rawText = extractTextFromChatCompletions(data);
-    const plan = parsePlan(rawText);
+    const response = parseWorkspaceResponse(rawText);
     return {
-      plan,
-      rawText: rawText || JSON.stringify(plan, null, 2),
-      endpointLabel: '/chat/completions · schema',
+      response,
+      rawText: rawText || JSON.stringify(response, null, 2),
+      endpointLabel: '/chat/completions · workspace schema',
     };
   } catch (error) {
     if (!config.allowJsonFallback) {
-      throw decorateError(error, '/chat/completions · schema');
+      throw decorateError(error, '/chat/completions · workspace schema');
     }
   }
 
@@ -278,11 +278,11 @@ async function requestByChatCompletions(
     });
 
     const rawText = extractTextFromChatCompletions(jsonObjectData);
-    const plan = parsePlan(rawText);
+    const response = parseWorkspaceResponse(rawText);
     return {
-      plan,
-      rawText: rawText || JSON.stringify(plan, null, 2),
-      endpointLabel: '/chat/completions · json_object fallback',
+      response,
+      rawText: rawText || JSON.stringify(response, null, 2),
+      endpointLabel: '/chat/completions · workspace json_object fallback',
     };
   } catch {
     // ignore and try plain fallback
@@ -301,14 +301,14 @@ async function requestByChatCompletions(
     });
 
     const rawText = extractTextFromChatCompletions(plainData);
-    const plan = parsePlan(rawText);
+    const response = parseWorkspaceResponse(rawText);
     return {
-      plan,
-      rawText: rawText || JSON.stringify(plan, null, 2),
-      endpointLabel: '/chat/completions · plain-json fallback',
+      response,
+      rawText: rawText || JSON.stringify(response, null, 2),
+      endpointLabel: '/chat/completions · workspace plain-json fallback',
     };
   } catch (error) {
-    throw decorateError(error, '/chat/completions · fallback');
+    throw decorateError(error, '/chat/completions · workspace fallback');
   }
 }
 
@@ -317,12 +317,14 @@ export async function generateBlueprintPlan({
   userPrompt,
   currentPlan,
   history,
+  library,
 }: GenerateArgs): Promise<GenerationResult> {
   const prompt = buildGenerationPrompt({
     config,
     userPrompt,
     currentPlan,
     history,
+    library,
   });
 
   if (config.apiMode === 'responses') {
