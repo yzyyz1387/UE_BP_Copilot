@@ -1,4 +1,5 @@
 export type ApiMode = 'chat_completions' | 'responses';
+export type ConnectionMode = 'direct' | 'cloud_proxy' | 'local_proxy';
 export type PinKind = 'exec' | 'data';
 export type AdviceLevel = 'note' | 'warning' | 'tip';
 export type BlueprintNodeKind =
@@ -100,10 +101,12 @@ export interface BlueprintFlowNodeData {
 }
 
 export interface AppConfig {
+  connectionMode: ConnectionMode;
   baseUrl: string;
   apiKey: string;
   model: string;
   apiMode: ApiMode;
+  localProxyUrl: string;
   blueprintType: string;
   ueVersion: string;
   sceneContext: string;

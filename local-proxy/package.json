@@ -1,0 +1,13 @@
+{
+  "name": "ue-bp-copilot-local-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local proxy for UE BP Copilot. It forwards user-owned OpenAI-compatible requests from the browser to model APIs without sending the API key through the UE BP Copilot cloud server.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

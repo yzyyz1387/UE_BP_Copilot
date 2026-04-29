@@ -11,7 +11,7 @@
 
 ## 概览
 
-UE 蓝图 AI 工作台可以在浏览器中直连 OpenAI 兼容接口，生成结构化蓝图方案。左侧是可折叠蓝图库，支持按用户和文件夹保存不同蓝图；中间是 UE5 风格节点画布；右侧是接口设置、导入、变量、提示、清单和聊天输入区。
+UE 蓝图 AI 工作台可以通过浏览器直连、云端中转或本地代理三种方式连接 OpenAI 兼容接口，生成结构化蓝图方案。左侧是可折叠蓝图库，支持按用户和文件夹保存不同蓝图；中间是 UE5 风格节点画布；右侧是接口设置、导入、变量、提示、清单和聊天输入区。
 
 项目定位是本地优先原型：API 密钥默认不保存，蓝图文件、画布位置和界面状态使用 `localStorage` 保存在当前浏览器。
 
@@ -22,7 +22,8 @@ UE 蓝图 AI 工作台可以在浏览器中直连 OpenAI 兼容接口，生成�
 - **对话式蓝图生成**：支持结合当前蓝图继续修改。
 - **AI 自动创建蓝图**：模型可返回工作区操作，前端自动在“用户 / 文件夹 / 蓝图”树中创建、覆盖或更新蓝图。
 - **结构化输出**：通过 JSON Schema 约束输出 `BlueprintWorkspaceResponse`，每个操作都携带完整 `BlueprintPlan`。
-- **双接口模式**：支持 `POST /responses` 与 `POST /chat/completions`。
+- **三种连接方式**：支持浏览器直连、Vercel 云端中转、本地 127.0.0.1 代理，解决不同模型服务的 CORS 与隐私需求。
+- **双接口类型**：支持 `POST /responses` 与 `POST /chat/completions`。
 - **自动回退**：结构化输出不兼容时，可自动使用纯 JSON 提示词重试。
 - **本地蓝图库**：左侧按“用户 / 文件夹 / 蓝图”组织，可新建、复制、删除和切换。
 - **画布锁定**：自定义锁定按钮会真正禁止拖动、缩放和选择。
@@ -38,7 +39,7 @@ UE 蓝图 AI 工作台可以在浏览器中直连 OpenAI 兼容接口，生成�
 | UI 框架 | React 19 + TypeScript |
 | 构建工具 | Vite 7 |
 | 蓝图画布 | @xyflow/react |
-| 接口请求 | 浏览器 `fetch` → OpenAI 兼容 REST |
+| 接口请求 | 浏览器直连 / `/api/chat-proxy` 云端中转 / 本地代理 → OpenAI 兼容 REST |
 | 本地存储 | `localStorage` |
 
 ---
@@ -63,13 +64,53 @@ npm run preview
 
 | 字段 | 说明 | 示例 |
 |---|---|---|
+| 连接方式 | 请求第三方模型接口的方式 | 浏览器直连 / 云端中转 / 本地代理 |
 | 接口地址 | OpenAI 兼容接口根地址 | `https://api.openai.com/v1` |
-| 密钥 | API 密钥，默认不保存 | `sk-...` |
+| 密钥 | 用户自己的 API Key，默认不保存 | `sk-...` |
 | 模型 | 模型名称 | `gpt-4o` |
-| 接口模式 | 接口类型 | `chat/completions` |
+| 接口类型 | OpenAI-compatible 请求路径 | `chat/completions` / `responses` |
+| 本地代理地址 | 本地代理模式使用 | `http://127.0.0.1:8787` |
 | 蓝图类型 | UE 类上下文 | `Actor`, `Character`, `Widget` |
 | UE 版本 | 目标引擎版本 | `UE 5.3+` |
 | 场景上下文 | 可选补充信息 | `Door Actor with BoxCollision` |
+
+
+---
+
+## 三种连接方式
+
+| 方式 | 请求路径 | 适合场景 | 注意事项 |
+|---|---|---|---|
+| 浏览器直连 | 浏览器 → 第三方模型接口 | 服务商支持 CORS，且用户希望 Key 不经过本站服务器 | 很多模型服务会因为 CORS 拦截；Key 可在浏览器 DevTools 中被当前使用者看到 |
+| 云端中转 | 浏览器 → `/api/chat-proxy` → 第三方模型接口 | 在线演示、普通用户快速测试、第三方接口不支持 CORS | 用户仍使用自己的接口和 Key；本站代码只转发本次请求，不保存 Key 或请求体，但 Key 会经过本站 Serverless |
+| 本地代理 | 浏览器 → `http://127.0.0.1:8787/proxy/openai` → 第三方模型接口 | 隐私优先用户，不希望 Key 经过本站服务器 | 需要用户先下载并运行本地代理 |
+
+### 本地代理部署
+
+网页的“本地代理”模式里提供了下载按钮，静态文件位于：
+
+```text
+public/downloads/ue-bp-copilot-local-proxy.zip
+```
+
+用户下载并解压后运行：
+
+```bash
+cd ue-bp-copilot-local-proxy
+node server.mjs
+```
+
+看到 `UE BP Copilot local proxy running at http://127.0.0.1:8787` 后，回到网页选择“本地代理”，代理地址保持 `http://127.0.0.1:8787`。
+
+### 云端中转接口
+
+Vercel Serverless 入口：
+
+```text
+api/chat-proxy.js
+```
+
+它只允许转发 `chat/completions` 与 `responses` 两个路径；云端中转只允许 `https://` 模型接口，并拒绝 localhost / 内网地址，避免被当作任意开放代理。
 
 ---
 
@@ -155,6 +196,12 @@ npm run preview
 ## 目录结构
 
 ```
+api/
+└── chat-proxy.js            # Vercel 云端中转接口
+local-proxy/                 # 本地代理源码，会打成 zip 供网页下载
+public/
+└── downloads/
+    └── ue-bp-copilot-local-proxy.zip
 src/
 ├── components/
 │   ├── BlueprintCanvas.tsx   # React Flow 画布与锁定逻辑
@@ -184,7 +231,7 @@ src/
 
 ## 安全说明
 
-项目直接从浏览器请求接口。密钥不会发送到中间服务器，但仍存在于浏览器环境中。建议用于本地开发、内部工具和演示；公开部署时建议增加服务端代理、短期令牌和限流。
+项目支持三种连接方式：浏览器直连时 Key 不经过本站服务器，但受 CORS 限制且 Key 会存在于浏览器环境；云端中转用于解决 CORS，本站代码不保存 Key 或请求体，但 Key 会经过 Vercel Serverless；本地代理让 Key 只发到用户自己的 127.0.0.1 代理，更适合隐私敏感场景。
 
 ---
 

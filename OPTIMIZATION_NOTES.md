@@ -18,3 +18,15 @@
 
 - 已使用 TypeScript `transpileModule` 对 19 个 TS/TSX 文件做语法检查。
 - 当前沙盒环境无法完成 `npm ci` / `npm run build`，因为项目依赖没有随压缩包提供且在线安装命令超时；请在本地有网络环境下执行 `npm install && npm run build` 做最终构建验证。
+
+## 本轮新增：接口连接三模式
+
+12. 新增“连接方式”配置，和原来的“接口类型”拆开：
+    - 浏览器直连：前端直接请求第三方模型接口，Key 不经过本站服务器，但需要服务商支持 CORS。
+    - 云端中转：前端请求 `/api/chat-proxy`，Vercel Serverless 使用用户本次提交的 baseUrl / Key 转发到模型接口，用于解决 CORS。
+    - 本地代理：前端请求用户电脑上的 `http://127.0.0.1:8787/proxy/openai`，Key 不经过本站服务器。
+13. 新增 `api/chat-proxy.js`，只允许转发 `chat/completions` 和 `responses`，云端模式只允许 `https://` 模型接口，并拒绝 localhost / 内网地址，降低开放代理风险。
+14. 新增 `local-proxy/` 本地代理项目，纯 Node.js 20，无第三方依赖；默认只监听 `127.0.0.1:8787`，并限制允许调用的网页 Origin。
+15. 新增静态下载包 `public/downloads/ue-bp-copilot-local-proxy.zip`，用户在网页选择“本地代理”后可直接下载。
+16. 接口设置面板增加三种模式的区别提示和本地代理部署教程。
+17. 请求错误提示会根据当前连接方式给出排查建议，尤其是直连模式遇到 CORS 时提示切换到云端中转或本地代理。

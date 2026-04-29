@@ -61,9 +61,28 @@ export function loadStoredConfig(defaultConfig: AppConfig): AppConfig {
     }
 
     const parsed = JSON.parse(raw) as Partial<AppConfig>;
+    const connectionModeCandidate = parsed.connectionMode;
+    const apiModeCandidate = parsed.apiMode;
+    const connectionMode: AppConfig['connectionMode'] =
+      connectionModeCandidate === 'direct' ||
+      connectionModeCandidate === 'cloud_proxy' ||
+      connectionModeCandidate === 'local_proxy'
+        ? connectionModeCandidate
+        : defaultConfig.connectionMode;
+    const apiMode: AppConfig['apiMode'] =
+      apiModeCandidate === 'chat_completions' || apiModeCandidate === 'responses'
+        ? apiModeCandidate
+        : defaultConfig.apiMode;
+
     return {
       ...defaultConfig,
       ...parsed,
+      connectionMode,
+      apiMode,
+      localProxyUrl:
+        typeof parsed.localProxyUrl === 'string' && parsed.localProxyUrl.trim()
+          ? parsed.localProxyUrl
+          : defaultConfig.localProxyUrl,
       apiKey:
         parsed.persistApiKey && typeof parsed.apiKey === 'string' ? parsed.apiKey : defaultConfig.apiKey,
     };

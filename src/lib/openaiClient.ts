@@ -11,19 +11,56 @@ interface GenerateArgs {
   library: BlueprintLibrary;
 }
 
-function joinUrl(baseUrl: string, path: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+type OpenAiPath = 'responses' | 'chat/completions';
+
+interface ProxyPayload {
+  baseUrl: string;
+  apiKey: string;
+  path: OpenAiPath;
+  body: unknown;
 }
 
-async function postJson(url: string, apiKey: string, body: unknown): Promise<unknown> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+const LOCAL_PROXY_FALLBACK_URL = 'http://127.0.0.1:8787';
+
+function normalizeOpenAiBaseUrl(baseUrl: string): string {
+  return baseUrl
+    .trim()
+    .replace(/\/chat\/completions\/?$/i, '')
+    .replace(/\/responses\/?$/i, '')
+    .replace(/\/+$/, '');
+}
+
+function joinUrl(baseUrl: string, path: string): string {
+  return `${normalizeOpenAiBaseUrl(baseUrl)}/${path.replace(/^\/+/, '')}`;
+}
+
+function joinPlainUrl(baseUrl: string, path: string): string {
+  return `${baseUrl.trim().replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function connectionModeLabel(config: AppConfig): string {
+  if (config.connectionMode === 'cloud_proxy') return '云端中转';
+  if (config.connectionMode === 'local_proxy') return '本地代理';
+  return '浏览器直连';
+}
+
+function getProxyEndpoint(config: AppConfig): string {
+  if (config.connectionMode === 'cloud_proxy') {
+    return '/api/chat-proxy';
+  }
+
+  return joinPlainUrl(config.localProxyUrl.trim() || LOCAL_PROXY_FALLBACK_URL, 'proxy/openai');
+}
+
+async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
+  let response: Response;
+
+  try {
+    response = await fetch(url, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message || '网络请求失败。');
+  }
 
   const text = await response.text();
   let parsed: unknown = null;
@@ -37,12 +74,43 @@ async function postJson(url: string, apiKey: string, body: unknown): Promise<unk
   if (!response.ok) {
     const errorMessage =
       (parsed as { error?: { message?: string } } | null)?.error?.message ??
+      (parsed as { message?: string } | null)?.message ??
       text ??
       `HTTP ${response.status}`;
     throw new Error(errorMessage);
   }
 
   return parsed ?? {};
+}
+
+async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown): Promise<unknown> {
+  const apiKey = config.apiKey.trim();
+
+  if (config.connectionMode === 'direct') {
+    return fetchJson(joinUrl(config.baseUrl, path), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  const payload: ProxyPayload = {
+    baseUrl: normalizeOpenAiBaseUrl(config.baseUrl),
+    apiKey,
+    path,
+    body,
+  };
+
+  return fetchJson(getProxyEndpoint(config), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 function extractJsonString(text: string): string {
@@ -156,10 +224,34 @@ function buildCompatPrompt(prompt: string): string {
   ].join('\n');
 }
 
-function decorateError(error: unknown, endpointLabel: string): Error {
+function getTroubleshootingText(config: AppConfig): string {
+  if (config.connectionMode === 'direct') {
+    return [
+      '当前连接方式：浏览器直连。',
+      '如果浏览器控制台出现 CORS / preflight / No Access-Control-Allow-Origin，请切换到“云端中转”或“本地代理”。',
+      '直连模式要求模型服务商允许网页跨域请求，而且密钥会暴露在浏览器 DevTools 中，只建议个人本地测试。',
+    ].join('\n');
+  }
+
+  if (config.connectionMode === 'cloud_proxy') {
+    return [
+      '当前连接方式：云端中转。',
+      '请确认接口地址是 OpenAI-compatible 的 /v1 根地址，例如 https://api.example.com/v1。',
+      '本站中转函数只转发本次请求，前端代码不会保存密钥；但密钥会经过本站 Serverless。',
+    ].join('\n');
+  }
+
+  return [
+    '当前连接方式：本地代理。',
+    '请先下载并运行本地代理，然后确认代理地址是 http://127.0.0.1:8787。',
+    '如果仍然失败，请检查本地代理终端日志、模型接口地址、模型名和密钥。',
+  ].join('\n');
+}
+
+function decorateError(error: unknown, endpointLabel: string, config: AppConfig): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(
-    `${message}\n\n请求方式：${endpointLabel}\n可排查：\n1. 接口地址是否写成完整的 /v1 根地址\n2. 模型名是否可用\n3. 该兼容服务是否支持结构化输出\n4. 如浏览器环境受限，可后续加一个本地代理版`,
+    `${message}\n\n请求方式：${connectionModeLabel(config)} · ${endpointLabel}\n可排查：\n1. 接口地址是否写成完整的 /v1 根地址\n2. 模型名是否可用\n3. 该兼容服务是否支持结构化输出\n4. ${getTroubleshootingText(config)}`,
   );
 }
 
@@ -167,10 +259,10 @@ async function requestByResponses(
   config: AppConfig,
   prompt: string,
 ): Promise<GenerationResult> {
-  const endpoint = joinUrl(config.baseUrl, 'responses');
+  const path: OpenAiPath = 'responses';
 
   try {
-    const data = (await postJson(endpoint, config.apiKey, {
+    const data = (await postModelJson(config, path, {
       model: config.model,
       input: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -194,16 +286,16 @@ async function requestByResponses(
     return {
       response,
       rawText: JSON.stringify(data.output_parsed ?? response, null, 2),
-      endpointLabel: '/responses · workspace schema',
+      endpointLabel: `${connectionModeLabel(config)} · /responses · workspace schema`,
     };
   } catch (error) {
     if (!config.allowJsonFallback) {
-      throw decorateError(error, '/responses · workspace schema');
+      throw decorateError(error, '/responses · workspace schema', config);
     }
   }
 
   try {
-    const fallbackData = await postJson(endpoint, config.apiKey, {
+    const fallbackData = await postModelJson(config, path, {
       model: config.model,
       input: [
         {
@@ -219,10 +311,10 @@ async function requestByResponses(
     return {
       response,
       rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: '/responses · workspace json fallback',
+      endpointLabel: `${connectionModeLabel(config)} · /responses · workspace json fallback`,
     };
   } catch (error) {
-    throw decorateError(error, '/responses · workspace json fallback');
+    throw decorateError(error, '/responses · workspace json fallback', config);
   }
 }
 
@@ -230,10 +322,10 @@ async function requestByChatCompletions(
   config: AppConfig,
   prompt: string,
 ): Promise<GenerationResult> {
-  const endpoint = joinUrl(config.baseUrl, 'chat/completions');
+  const path: OpenAiPath = 'chat/completions';
 
   try {
-    const data = await postJson(endpoint, config.apiKey, {
+    const data = await postModelJson(config, path, {
       model: config.model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -254,16 +346,16 @@ async function requestByChatCompletions(
     return {
       response,
       rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: '/chat/completions · workspace schema',
+      endpointLabel: `${connectionModeLabel(config)} · /chat/completions · workspace schema`,
     };
   } catch (error) {
     if (!config.allowJsonFallback) {
-      throw decorateError(error, '/chat/completions · workspace schema');
+      throw decorateError(error, '/chat/completions · workspace schema', config);
     }
   }
 
   try {
-    const jsonObjectData = await postJson(endpoint, config.apiKey, {
+    const jsonObjectData = await postModelJson(config, path, {
       model: config.model,
       messages: [
         {
@@ -282,14 +374,14 @@ async function requestByChatCompletions(
     return {
       response,
       rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: '/chat/completions · workspace json_object fallback',
+      endpointLabel: `${connectionModeLabel(config)} · /chat/completions · workspace json_object fallback`,
     };
   } catch {
     // ignore and try plain fallback
   }
 
   try {
-    const plainData = await postJson(endpoint, config.apiKey, {
+    const plainData = await postModelJson(config, path, {
       model: config.model,
       messages: [
         {
@@ -305,10 +397,10 @@ async function requestByChatCompletions(
     return {
       response,
       rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: '/chat/completions · workspace plain-json fallback',
+      endpointLabel: `${connectionModeLabel(config)} · /chat/completions · workspace plain-json fallback`,
     };
   } catch (error) {
-    throw decorateError(error, '/chat/completions · workspace fallback');
+    throw decorateError(error, '/chat/completions · workspace fallback', config);
   }
 }
 

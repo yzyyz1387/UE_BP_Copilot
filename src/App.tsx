@@ -31,10 +31,12 @@ import type {
 } from './types';
 
 const DEFAULT_CONFIG: AppConfig = {
+  connectionMode: 'direct',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   model: 'gpt-4o',
   apiMode: 'chat_completions',
+  localProxyUrl: 'http://127.0.0.1:8787',
   blueprintType: 'Actor',
   ueVersion: 'UE 5.3+',
   sceneContext: '',
@@ -164,7 +166,7 @@ export default function App() {
     createMessage('assistant', findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT)).assistantReply),
   ]);
   const [busy, setBusy] = useState(false);
-  const [statusText, setStatusText] = useState('本地前端模式 · 密钥默认不保存');
+  const [statusText, setStatusText] = useState('本地优先 · 支持直连 / 云端中转 / 本地代理');
   const [endpointLabel, setEndpointLabel] = useState('');
 
   const activeProject = useMemo(
