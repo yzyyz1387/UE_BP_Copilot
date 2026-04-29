@@ -1,14 +1,10 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { BlueprintFlowNodeData, Pin } from '../types';
-import { getNodeAccent } from '../lib/blueprintTransform';
-
-function pinColor(pin: Pin) {
-  return pin.kind === 'exec' ? '#f7f9fc' : '#57c1ff';
-}
+import { getNodeAccent, getPinColor } from '../lib/blueprintTransform';
 
 function PinLabel({ pin, direction }: { pin: Pin; direction: 'input' | 'output' }) {
   const isInput = direction === 'input';
-  const color = pinColor(pin);
+  const color = getPinColor(pin);
   return (
     <div className={`bp-node__pin-label ${isInput ? 'bp-node__pin-label--input' : 'bp-node__pin-label--output'}`}>
       <Handle
@@ -53,7 +49,7 @@ function CompactNode({
           position={Position.Left}
           isConnectable={false}
           className="bp-node__handle"
-          style={{ background: pinColor(input), borderColor: pinColor(input) }}
+          style={{ background: getPinColor(input), borderColor: getPinColor(input) }}
         />
       )}
 
@@ -86,7 +82,7 @@ function CompactNode({
           position={Position.Right}
           isConnectable={false}
           className="bp-node__handle"
-          style={{ background: pinColor(output), borderColor: pinColor(output) }}
+          style={{ background: getPinColor(output), borderColor: getPinColor(output) }}
         />
       )}
     </div>

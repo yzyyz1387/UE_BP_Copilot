@@ -4,14 +4,22 @@ import { ChatPanel } from './components/ChatPanel';
 import { HeaderBar } from './components/HeaderBar';
 import { ImportPanel } from './components/ImportPanel';
 import { InspectorTabs, type InspectorTab } from './components/InspectorTabs';
+import { ProjectSidebar } from './components/ProjectSidebar';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Toast, useToast } from './components/Toast';
 import { DEMO_BLUEPRINT } from './data/demoBlueprint';
-import { loadStoredConfig, storeConfig, loadStoredPlan, storePlan } from './lib/localStorage';
+import {
+  createBlueprintProject,
+  loadStoredConfig,
+  loadStoredLibrary,
+  storeConfig,
+  storeLibrary,
+  storePlan,
+} from './lib/localStorage';
 import { normalizeBlueprintPlan } from './lib/blueprintTransform';
 import { generateBlueprintPlan } from './lib/openaiClient';
 import { buildExternalPromptTemplate } from './lib/prompt';
-import type { AppConfig, BlueprintPlan, ChatMessage } from './types';
+import type { AppConfig, BlueprintLibrary, BlueprintPlan, ChatMessage } from './types';
 
 const DEFAULT_CONFIG: AppConfig = {
   baseUrl: 'https://api.openai.com/v1',
@@ -79,33 +87,36 @@ async function copyToClipboard(text: string): Promise<void> {
   textarea.remove();
 }
 
+function findActivePlan(library: BlueprintLibrary): BlueprintPlan {
+  return library.projects.find((project) => project.id === library.activeProjectId)?.plan ?? library.projects[0]?.plan ?? DEMO_BLUEPRINT;
+}
+
 export default function App() {
   const { toasts, show: showToast, dismiss: dismissToast } = useToast();
   const [config, setConfig] = useState<AppConfig>(() => loadStoredConfig(DEFAULT_CONFIG));
-  const [plan, setPlan] = useState<BlueprintPlan>(() => {
-    const stored = loadStoredPlan();
-    if (stored) {
-      try { return normalizeBlueprintPlan(stored); } catch { /* fall through */ }
-    }
-    return DEMO_BLUEPRINT;
-  });
-  const [rawJson, setRawJson] = useState<string>(() => JSON.stringify(
-    (() => { const s = loadStoredPlan(); if (s) { try { return normalizeBlueprintPlan(s); } catch { /**/ } } return DEMO_BLUEPRINT; })(),
-    null, 2,
-  ));
+  const [library, setLibrary] = useState<BlueprintLibrary>(() => loadStoredLibrary(DEMO_BLUEPRINT));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [plan, setPlan] = useState<BlueprintPlan>(() => normalizeBlueprintPlan(findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT))));
+  const [rawJson, setRawJson] = useState<string>(() => JSON.stringify(normalizeBlueprintPlan(findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT))), null, 2));
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(plan.nodes[0]?.id ?? null);
   const [activeTab, setActiveTab] = useState<InspectorTab>('notes');
   const [prompt, setPrompt] = useState<string>('做一个按下 E 打开门的 Actor 蓝图');
   const [importText, setImportText] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
-    createMessage('assistant', '欢迎。你可以直接描述你要的 UE5 蓝图逻辑，我会同时生成左侧节点图和右侧的新手提示、变量建议。'),
-    createMessage('assistant', DEMO_BLUEPRINT.assistantReply),
+    createMessage('assistant', '欢迎使用本地优先的 UE5 蓝图 AI 工作台。你可以创建不同用户/文件夹的蓝图，也可以直接描述需求生成节点图。'),
+    createMessage('assistant', findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT)).assistantReply),
   ]);
   const [busy, setBusy] = useState(false);
-  const [statusText, setStatusText] = useState('本地前端模式 · API Key 默认不保存');
+  const [statusText, setStatusText] = useState('本地前端模式 · 密钥默认不保存');
   const [endpointLabel, setEndpointLabel] = useState('');
 
+  const activeProject = useMemo(
+    () => library.projects.find((project) => project.id === library.activeProjectId) ?? library.projects[0],
+    [library],
+  );
+
   useEffect(() => { storeConfig(config); }, [config]);
+  useEffect(() => { storeLibrary(library); }, [library]);
   useEffect(() => { storePlan(plan); }, [plan]);
 
   const selectedNode = useMemo(
@@ -121,27 +132,126 @@ export default function App() {
   const handleConfigChange = (patch: Partial<AppConfig>) =>
     setConfig((c) => ({ ...c, ...patch }));
 
-  const applyPlan = (nextPlan: BlueprintPlan, sourceLabel: string, assistantText?: string) => {
+  const savePlanToActiveProject = (nextPlan: BlueprintPlan) => {
+    setLibrary((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === current.activeProjectId
+          ? {
+              ...project,
+              name: nextPlan.meta.title?.trim() || project.name,
+              updatedAt: new Date().toISOString(),
+              plan: nextPlan,
+            }
+          : project,
+      ),
+    }));
+  };
+
+  const setCurrentPlan = (nextPlan: BlueprintPlan, status: string, assistantText?: string) => {
     setPlan(nextPlan);
     setRawJson(JSON.stringify(nextPlan, null, 2));
     setSelectedNodeId(nextPlan.nodes[0]?.id ?? null);
     setActiveTab('notes');
-    setEndpointLabel(sourceLabel);
-    setStatusText(`已更新：${nextPlan.meta.title}`);
+    setStatusText(status);
     if (assistantText) setMessages((cur) => [...cur, createMessage('assistant', assistantText)]);
   };
 
-  const handleLoadDemo = () => {
-    setPlan(DEMO_BLUEPRINT);
-    setRawJson(JSON.stringify(DEMO_BLUEPRINT, null, 2));
-    setSelectedNodeId(DEMO_BLUEPRINT.nodes[0]?.id ?? null);
-    setActiveTab('notes');
-    setStatusText('已载入本地示例图');
-    setEndpointLabel('demo');
+  const applyPlan = (nextPlan: BlueprintPlan, sourceLabel: string, assistantText?: string) => {
+    savePlanToActiveProject(nextPlan);
+    setEndpointLabel(sourceLabel);
+    setCurrentPlan(nextPlan, `已更新：${nextPlan.meta.title}`, assistantText);
+  };
+
+  const handleSelectProject = (projectId: string) => {
+    const project = library.projects.find((item) => item.id === projectId);
+    if (!project) return;
+    const normalizedPlan = normalizeBlueprintPlan(project.plan);
+    setLibrary((current) => ({ ...current, activeProjectId: projectId }));
+    setEndpointLabel('本地存储');
+    setCurrentPlan(normalizedPlan, `已打开：${project.name}`);
     setMessages([
-      createMessage('assistant', '已重置到本地示例图。你可以直接覆盖需求，也可以勾选"基于当前蓝图继续修改"让模型沿着当前图继续迭代。'),
+      createMessage('assistant', `已打开“${project.name}”。这个蓝图归档在 ${project.userName} / ${project.folderPath}。`),
+      createMessage('assistant', normalizedPlan.assistantReply),
+    ]);
+  };
+
+  const handleCreateProject = () => {
+    const userName = window.prompt('用户名称', activeProject?.userName || '默认用户')?.trim();
+    if (!userName) return;
+    const folderPath = window.prompt('文件夹路径', activeProject?.folderPath || '未分类')?.trim();
+    if (!folderPath) return;
+    const name = window.prompt('蓝图名称', '新建蓝图')?.trim();
+    if (!name) return;
+
+    const nextPlan = normalizeBlueprintPlan({
+      ...DEMO_BLUEPRINT,
+      meta: {
+        ...DEMO_BLUEPRINT.meta,
+        title: name,
+        summary: '新建本地蓝图，可在右侧输入需求后生成或导入 JSON。',
+      },
+      assistantReply: '已创建新的本地蓝图。你可以在输入框描述需求后生成，也可以导入已有 JSON。',
+    });
+    const project = createBlueprintProject(nextPlan, { name, userName, folderPath });
+
+    setLibrary((current) => ({
+      ...current,
+      activeProjectId: project.id,
+      projects: [...current.projects, project],
+    }));
+    setEndpointLabel('本地新建');
+    setCurrentPlan(nextPlan, `已新建：${name}`, nextPlan.assistantReply);
+  };
+
+  const handleDuplicateProject = () => {
+    const name = window.prompt('复制后的蓝图名称', `${plan.meta.title || activeProject?.name || '蓝图'} 副本`)?.trim();
+    if (!name || !activeProject) return;
+    const nextPlan = normalizeBlueprintPlan({
+      ...plan,
+      meta: { ...plan.meta, title: name },
+    });
+    const project = createBlueprintProject(nextPlan, {
+      name,
+      userName: activeProject.userName,
+      folderPath: activeProject.folderPath,
+    });
+
+    setLibrary((current) => ({
+      ...current,
+      activeProjectId: project.id,
+      projects: [...current.projects, project],
+    }));
+    setEndpointLabel('本地复制');
+    setCurrentPlan(nextPlan, `已复制：${name}`, '已把当前蓝图复制成新的本地文件。');
+  };
+
+  const handleDeleteProject = () => {
+    if (!activeProject) return;
+    if (library.projects.length <= 1) {
+      showToast('至少需要保留一个本地蓝图。', 'error');
+      return;
+    }
+    if (!window.confirm(`确定删除“${activeProject.name}”？此操作只删除浏览器本地存储中的这份蓝图。`)) return;
+
+    const remaining = library.projects.filter((project) => project.id !== activeProject.id);
+    const nextActive = remaining[0];
+    const nextPlan = normalizeBlueprintPlan(nextActive.plan);
+
+    setLibrary({ version: 1, activeProjectId: nextActive.id, projects: remaining });
+    setEndpointLabel('本地存储');
+    setCurrentPlan(nextPlan, `已删除，当前打开：${nextActive.name}`, `已删除“${activeProject.name}”，并打开“${nextActive.name}”。`);
+  };
+
+  const handleLoadDemo = () => {
+    const demoPlan = normalizeBlueprintPlan(DEMO_BLUEPRINT);
+    savePlanToActiveProject(demoPlan);
+    setEndpointLabel('示例');
+    setMessages([
+      createMessage('assistant', '已重置到本地示例图。你可以直接覆盖需求，也可以勾选“基于当前蓝图继续修改”让模型沿着当前图继续迭代。'),
       createMessage('assistant', DEMO_BLUEPRINT.assistantReply),
     ]);
+    setCurrentPlan(demoPlan, '已载入本地示例图');
   };
 
   const handleExport = () => { downloadJsonFile(plan); setStatusText('已导出当前蓝图 JSON'); };
@@ -159,16 +269,16 @@ export default function App() {
   const handleCopyExternalPrompt = async () => {
     try {
       await copyToClipboard(externalPrompt);
-      showToast('已复制外部 AI Prompt', 'success');
+      showToast('已复制外部 AI 提示词', 'success');
     } catch {
-      showToast('Prompt 复制失败', 'error');
+      showToast('提示词复制失败', 'error');
     }
   };
 
   const handleApplyImport = () => {
     try {
       const parsed = JSON.parse(extractJsonString(importText));
-      applyPlan(normalizeBlueprintPlan(parsed), 'imported-json', '已导入外部 JSON，并更新为当前蓝图。');
+      applyPlan(normalizeBlueprintPlan(parsed), '导入 JSON', '已导入外部 JSON，并更新为当前蓝图。');
     } catch (reason) {
       showToast(`导入 JSON 失败：${reason instanceof Error ? reason.message : '未知错误'}`, 'error');
       setStatusText('导入失败');
@@ -176,14 +286,14 @@ export default function App() {
   };
 
   const handleClearChat = () => {
-    setMessages([createMessage('assistant', '会话已清空。你可以重新描述需求，也可以保留当前左侧蓝图继续修改。')]);
+    setMessages([createMessage('assistant', '会话已清空。你可以重新描述需求，也可以保留当前蓝图继续修改。')]);
     setStatusText('会话已清空');
   };
 
   const handleSend = async () => {
     const userPrompt = prompt.trim();
     if (!userPrompt) { showToast('请先输入你想生成的蓝图需求。', 'error'); return; }
-    if (!config.apiKey.trim()) { showToast('请先在右侧 API 设置中填写 API Key。', 'error'); return; }
+    if (!config.apiKey.trim()) { showToast('请先在右侧接口设置中填写密钥。', 'error'); return; }
 
     const userMessage = createMessage('user', userPrompt);
     const history = [...messages, userMessage];
@@ -206,6 +316,16 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <ProjectSidebar
+        library={library}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+        onSelectProject={handleSelectProject}
+        onCreateProject={handleCreateProject}
+        onDuplicateProject={handleDuplicateProject}
+        onDeleteProject={handleDeleteProject}
+      />
+
       <main className="workspace">
         <section className="left-pane">
           <HeaderBar
@@ -216,7 +336,12 @@ export default function App() {
             onExportJson={handleExport}
             onCopyJson={handleCopy}
           />
-          <BlueprintCanvas plan={plan} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
+          <BlueprintCanvas
+            plan={plan}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={setSelectedNodeId}
+            storageScope={activeProject?.id}
+          />
         </section>
 
         <aside className="right-pane">

@@ -124,3 +124,19 @@ export interface GenerationResult {
   rawText: string;
   endpointLabel: string;
 }
+
+export interface BlueprintProject {
+  id: string;
+  name: string;
+  userName: string;
+  folderPath: string;
+  createdAt: string;
+  updatedAt: string;
+  plan: BlueprintPlan;
+}
+
+export interface BlueprintLibrary {
+  version: 1;
+  activeProjectId: string;
+  projects: BlueprintProject[];
+}

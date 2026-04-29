@@ -416,6 +416,6 @@ export const DEMO_BLUEPRINT: BlueprintPlan = {
     '确认输入映射中存在 Interact，或者替换成项目里实际使用的 Enhanced Input 事件。',
     '在 Timeline 内创建 0 到 1 的 Float Track，并根据 DoorOpenTime 调整时长。',
     '把 ClosedRotation 和 OpenRotation 调成门实际需要的角度。',
-    'Compile 后在关卡里放置多个门实例，检查变量的 Instance Editable 是否满足调参需求。',
+    'Compile 后在关卡里放置多个门实例，检查变量的 实例可编辑 是否满足调参需求。',
   ],
 };

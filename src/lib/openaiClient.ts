@@ -159,7 +159,7 @@ function buildCompatPrompt(prompt: string): string {
 function decorateError(error: unknown, endpointLabel: string): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(
-    `${message}\n\n请求方式：${endpointLabel}\n可排查：\n1. Base URL 是否写成完整的 /v1 根地址\n2. 模型名是否可用\n3. 该兼容服务是否支持 Structured Outputs\n4. 如浏览器环境受限，可后续加一个本地代理版`,
+    `${message}\n\n请求方式：${endpointLabel}\n可排查：\n1. 接口地址是否写成完整的 /v1 根地址\n2. 模型名是否可用\n3. 该兼容服务是否支持结构化输出\n4. 如浏览器环境受限，可后续加一个本地代理版`,
   );
 }
 

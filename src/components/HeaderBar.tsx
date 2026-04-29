@@ -20,8 +20,8 @@ export function HeaderBar({
   return (
     <header className="topbar">
       <div className="topbar__copy">
-        <span className="eyebrow">UE5 Blueprint · Local-first prototype</span>
-        <h1>UE Blueprint AI Studio</h1>
+        <span className="eyebrow">UE5 蓝图 · 本地优先原型工具</span>
+        <h1>UE 蓝图 AI 工作台</h1>
       </div>
 
       <div className="topbar__node-detail">

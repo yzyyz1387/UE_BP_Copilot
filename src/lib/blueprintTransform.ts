@@ -251,31 +251,51 @@ export function normalizeBlueprintPlan(value: unknown): BlueprintPlan {
 export function getNodeAccent(nodeType: BlueprintNodeKind, category: string): string {
   const categoryText = category.toLowerCase();
 
-  if (nodeType === 'event') {
-    return 'event';
-  }
-  if (nodeType === 'variable') {
-    return 'variable';
-  }
-  if (nodeType === 'macro') {
-    return 'macro';
-  }
-  if (categoryText.includes('timeline')) {
-    return 'macro';
-  }
-  if (categoryText.includes('flow')) {
-    return 'flow';
-  }
-  if (categoryText.includes('math')) {
-    return 'math';
-  }
-  if (categoryText.includes('cast')) {
-    return 'cast';
-  }
-  if (categoryText.includes('component')) {
-    return 'component';
-  }
+  if (nodeType === 'event' || categoryText.includes('event') || categoryText.includes('input')) return 'event';
+  if (nodeType === 'variable' || categoryText.includes('variable')) return 'variable';
+  if (nodeType === 'macro' || categoryText.includes('timeline') || categoryText.includes('macro')) return 'macro';
+  if (categoryText.includes('flow') || categoryText.includes('branch') || categoryText.includes('sequence')) return 'flow';
+  if (categoryText.includes('math') || categoryText.includes('vector') || categoryText.includes('rotator')) return 'math';
+  if (categoryText.includes('cast')) return 'cast';
+  if (categoryText.includes('component') || categoryText.includes('actor') || categoryText.includes('mesh')) return 'component';
+  if (nodeType === 'comment') return 'comment';
   return 'function';
+}
+
+export function getNodeColorByAccent(accent: string): string {
+  switch (accent) {
+    case 'event': return '#9f353a';
+    case 'function': return '#1f5f9f';
+    case 'macro': return '#8150b3';
+    case 'variable': return '#2d8a41';
+    case 'flow': return '#b8842b';
+    case 'math': return '#2d918c';
+    case 'cast': return '#5577c7';
+    case 'component': return '#2c6f93';
+    case 'comment': return '#6b6f78';
+    default: return '#1f5f9f';
+  }
+}
+
+export function getPinColor(pin: Pick<Pin, 'kind' | 'dataType'>): string {
+  if (pin.kind === 'exec') return '#f4f4f4';
+
+  const text = pin.dataType.toLowerCase();
+  if (text.includes('bool')) return '#b73b3b';
+  if (text.includes('int') || text.includes('byte')) return '#3aa55b';
+  if (text.includes('float') || text.includes('double')) return '#9ac85f';
+  if (text.includes('string')) return '#d84fb2';
+  if (text.includes('text')) return '#e46fb0';
+  if (text.includes('name')) return '#b969d8';
+  if (text.includes('vector')) return '#f0c24f';
+  if (text.includes('rotator')) return '#7c6fe6';
+  if (text.includes('transform')) return '#df8a3d';
+  if (text.includes('class')) return '#7a5bd6';
+  if (text.includes('enum')) return '#7cc4aa';
+  if (text.includes('struct')) return '#8dc5e8';
+  if (text.includes('delegate') || text.includes('event')) return '#c04545';
+  if (text.includes('actor') || text.includes('component') || text.includes('object') || text.includes('widget')) return '#54a6e8';
+  return '#5fb7ff';
 }
 
 export function toFlowNodes(
@@ -302,20 +322,18 @@ export function toFlowNodes(
   }));
 }
 
-/** Auto-layout nodes using dagre when positions overlap or are invalid */
 export function autoLayoutNodes(
   nodes: Node<BlueprintFlowNodeData>[],
   edges: Edge[],
 ): Node<BlueprintFlowNodeData>[] {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 80, ranksep: 180 });
+  g.setGraph({ rankdir: 'LR', nodesep: 54, ranksep: 142 });
   g.setDefaultEdgeLabel(() => ({}));
 
   nodes.forEach((node) => {
-    // Estimate node size (compact vs full)
     const isCompact = node.data.inputs.length <= 1 && node.data.outputs.length <= 1;
-    const width = isCompact ? 200 : 300;
-    const height = isCompact ? 60 : Math.max(node.data.inputs.length, node.data.outputs.length, 1) * 48 + 120;
+    const width = isCompact ? 168 : 250;
+    const height = isCompact ? 50 : Math.max(node.data.inputs.length, node.data.outputs.length, 1) * 34 + 82;
     g.setNode(node.id, { width, height });
   });
 
@@ -339,8 +357,11 @@ export function autoLayoutNodes(
 
 export function toFlowEdges(plan: BlueprintPlan): Edge[] {
   return plan.links.map((link) => {
+    const sourceNode = plan.nodes.find((node) => node.id === link.fromNodeId);
+    const sourcePin = sourceNode?.outputs.find((pin) => pin.id === link.fromPinId);
+    const fallbackPin = { kind: link.kind, dataType: link.kind === 'exec' ? 'Exec' : 'Any' } as Pick<Pin, 'kind' | 'dataType'>;
+    const color = getPinColor(sourcePin ?? fallbackPin);
     const isExec = link.kind === 'exec';
-    const color = isExec ? '#f7f9fc' : '#57c1ff';
 
     return {
       id: link.id,
@@ -353,11 +374,11 @@ export function toFlowEdges(plan: BlueprintPlan): Edge[] {
       animated: false,
       style: {
         stroke: color,
-        strokeWidth: isExec ? 2.6 : 2.1,
+        strokeWidth: isExec ? 2.2 : 1.8,
       },
       labelStyle: {
         fill: '#d7e6f5',
-        fontSize: 12,
+        fontSize: 11,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,

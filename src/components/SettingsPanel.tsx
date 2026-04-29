@@ -10,17 +10,17 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
     <>
       <section className="section-card">
         <div className="section-card__header">
-          <h3>API 设置</h3>
-          <span className="panel-tag">纯前端直连</span>
+          <h3>接口设置</h3>
+          <span className="panel-tag">浏览器直连</span>
         </div>
 
         <div className="inline-alert inline-alert--warning">
-          请设置 Key ...
+          请填写密钥；默认不会保存到浏览器。
         </div>
 
         <div className="form-grid">
           <label className="form-field form-field--full">
-            <span>Base URL</span>
+            <span>接口地址</span>
             <input
               value={config.baseUrl}
               onChange={(event) => onChange({ baseUrl: event.target.value })}
@@ -29,7 +29,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
           </label>
 
           <label className="form-field form-field--full">
-            <span>API Key</span>
+            <span>密钥</span>
             <input
               type="password"
               value={config.apiKey}
@@ -39,7 +39,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
           </label>
 
           <label className="form-field">
-            <span>Model</span>
+            <span>模型</span>
             <input
               value={config.model}
               onChange={(event) => onChange({ model: event.target.value })}
@@ -48,7 +48,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
           </label>
 
           <label className="form-field">
-            <span>API 模式</span>
+            <span>接口模式</span>
             <select
               value={config.apiMode}
               onChange={(event) =>
@@ -70,7 +70,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
               checked={config.allowJsonFallback}
               onChange={(event) => onChange({ allowJsonFallback: event.target.checked })}
             />
-            <span>当结构化输出不兼容时，自动回退到 JSON-only 模式</span>
+            <span>结构化输出不兼容时自动回退到纯 JSON 模式</span>
           </label>
 
           <label className="checkbox-row">
@@ -79,7 +79,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
               checked={config.persistApiKey}
               onChange={(event) => onChange({ persistApiKey: event.target.checked })}
             />
-            <span>允许把 API Key 保存在本地浏览器（默认不保存）</span>
+            <span>允许把密钥保存在本地浏览器（默认不保存）</span>
           </label>
         </div>
       </section>

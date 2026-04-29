@@ -15,7 +15,7 @@ const TAB_OPTIONS: Array<{ id: InspectorTab; label: string }> = [
   { id: 'notes', label: '备注' },
   { id: 'variables', label: '变量' },
   { id: 'tips', label: '搜索提示' },
-  { id: 'checklist', label: 'Checklist' },
+  { id: 'checklist', label: '执行清单' },
   { id: 'json', label: 'JSON' },
 ];
 
@@ -115,8 +115,8 @@ export function InspectorTabs({
                   <p>{variable.reason}</p>
                   <div className="tag-list">
                     <span className="pill">默认值：{variable.defaultValue || '空'}</span>
-                    {variable.instanceEditable ? <span className="pill">Instance Editable</span> : null}
-                    {variable.exposeOnSpawn ? <span className="pill">Expose on Spawn</span> : null}
+                    {variable.instanceEditable ? <span className="pill">实例可编辑</span> : null}
+                    {variable.exposeOnSpawn ? <span className="pill">生成时公开</span> : null}
                     {variable.promoteFromNode ? (
                       <span className="pill">来源：{relatedNodeTitle(plan, variable.promoteFromNode)}</span>
                     ) : null}
@@ -160,7 +160,7 @@ export function InspectorTabs({
                 ))}
               </ol>
             ) : (
-              <p className="empty-hint">当前没有 Checklist。</p>
+              <p className="empty-hint">当前没有执行清单。</p>
             )}
           </div>
         ) : null}
