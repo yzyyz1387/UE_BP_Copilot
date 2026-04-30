@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: AppConfig = {
   model: 'gpt-4o',
   apiMode: 'chat_completions',
   outputFormatMode: 'auto',
-  requestTimeoutMs: 60000,
+  requestTimeoutMs: 180000,
   localProxyUrl: 'http://127.0.0.1:8787',
   blueprintType: 'Actor',
   ueVersion: 'UE 5.3+',

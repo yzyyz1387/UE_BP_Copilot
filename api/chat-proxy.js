@@ -6,7 +6,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:5173',
 ];
 const MIN_TIMEOUT_MS = 5_000;
-const MAX_TIMEOUT_MS = 55_000;
+// Vercel Fluid Compute 当前可把 Hobby 函数跑到 300s；这里预留 15s 给函数返回前端。
+const MAX_TIMEOUT_MS = 285_000;
 
 function getAllowedOrigins() {
   const fromEnv = (process.env.ALLOWED_ORIGINS || '')
@@ -146,7 +147,7 @@ function buildTargetUrl(baseUrl, path) {
 
 function clampTimeoutMs(value) {
   const candidate = Number(value);
-  if (!Number.isFinite(candidate)) return 45_000;
+  if (!Number.isFinite(candidate)) return 180_000;
   return Math.min(Math.max(candidate, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
@@ -167,6 +168,141 @@ function parseProviderTimeout(text) {
     // ignore non-json upstream body
   }
   return null;
+}
+
+function textFromDeltaContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') return '';
+      if (typeof part.text === 'string') return part.text;
+      if (typeof part.content === 'string') return part.content;
+      if (typeof part.value === 'string') return part.value;
+      return '';
+    })
+    .join('');
+}
+
+async function readOpenAiSseCompletion(upstream) {
+  const reader = upstream.body?.getReader?.();
+  if (!reader) {
+    return { text: await upstream.text(), finishReason: 'stop', usage: null, streamed: false };
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let finishReason = '';
+  let usage = null;
+
+  const handleEventPayload = (payload) => {
+    const data = payload.trim();
+    if (!data || data === '[DONE]') return;
+
+    let chunk;
+    try {
+      chunk = JSON.parse(data);
+    } catch {
+      return;
+    }
+
+    if (chunk?.error) {
+      const message =
+        typeof chunk.error === 'string'
+          ? chunk.error
+          : chunk.error?.message || '上游流式响应返回错误。';
+      throw new Error(message);
+    }
+
+    if (chunk?.usage) {
+      usage = chunk.usage;
+    }
+
+    const choice = Array.isArray(chunk?.choices) ? chunk.choices[0] : undefined;
+    if (!choice) return;
+
+    content += textFromDeltaContent(choice.delta?.content);
+    content += textFromDeltaContent(choice.message?.content);
+    if (typeof choice.text === 'string') content += choice.text;
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(':')) continue;
+      if (trimmed.startsWith('data:')) {
+        handleEventPayload(trimmed.slice(5));
+      }
+    }
+  }
+
+  const tail = `${buffer}${decoder.decode()}`.trim();
+  if (tail.startsWith('data:')) {
+    handleEventPayload(tail.slice(5));
+  }
+
+  return { text: content, finishReason: finishReason || 'stop', usage, streamed: true };
+}
+
+async function forwardNonStream({ target, apiKey, body, signal }) {
+  return fetch(target.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+async function forwardChatCompletionsAsUpstreamStream({ target, apiKey, body, signal }) {
+  const upstream = await fetch(target.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  });
+
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!upstream.ok || !contentType.includes('text/event-stream')) {
+    return upstream;
+  }
+
+  const completion = await readOpenAiSseCompletion(upstream);
+  return new Response(
+    JSON.stringify({
+      id: `chatcmpl-proxy-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: body?.model || 'unknown',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: completion.text },
+          finish_reason: completion.finishReason,
+        },
+      ],
+      ...(completion.usage ? { usage: completion.usage } : {}),
+      proxy: { upstreamStreamCollected: true },
+    }),
+    {
+      status: upstream.status,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    },
+  );
 }
 
 export default async function handler(req, res) {
@@ -194,7 +330,7 @@ export default async function handler(req, res) {
 
   try {
     const payload = await readBody(req);
-    const { baseUrl, apiKey, body, timeoutMs } = payload || {};
+    const { baseUrl, apiKey, body, timeoutMs, streamUpstream } = payload || {};
     path = payload?.path;
 
     if (!apiKey || typeof apiKey !== 'string') {
@@ -215,23 +351,18 @@ export default async function handler(req, res) {
 
     let upstream;
     try {
-      upstream = await fetch(target.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      upstream =
+        streamUpstream && path === 'chat/completions'
+          ? await forwardChatCompletionsAsUpstreamStream({ target, apiKey, body, signal: controller.signal })
+          : await forwardNonStream({ target, apiKey, body, signal: controller.signal });
     } catch (error) {
       if (controller.signal.aborted) {
         sendJson(res, 504, {
           error: {
-            message: `云端中转等待上游模型服务超过 ${Math.round(timeout / 1000)} 秒。请求可能没有进入模型推理；请尝试“兼容纯 JSON”、缩短提示词，或切换本地代理。`,
+            message: `云端中转等待上游模型服务超过 ${Math.round(timeout / 1000)} 秒。请求已经可能进入模型推理，但未能在超时前返回完整结果。请调高请求超时、缩短提示词，或切换本地代理。`,
             code: 'UPSTREAM_TIMEOUT',
           },
-          proxy: { mode: 'cloud', targetHost, path },
+          proxy: { mode: 'cloud', targetHost, path, timeoutMs: timeout },
         });
         return;
       }
@@ -245,7 +376,7 @@ export default async function handler(req, res) {
     if (providerTimeout) {
       sendJson(res, 504, {
         error: {
-          message: `上游模型网关超时：${providerTimeout}。如果后台 token 用量没有变化，说明请求大概率卡在模型服务网关，建议改用“兼容纯 JSON”或本地代理。`,
+          message: `上游模型网关超时：${providerTimeout}。这通常表示模型已开始处理但兼容网关等待最终响应过久。建议开启/保留上游流式收集、缩短提示词，或使用本地代理。`,
           code: 'PROVIDER_TIMEOUT',
         },
         proxy: { mode: 'cloud', targetHost, path, upstreamStatus: upstream.status },

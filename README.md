@@ -112,7 +112,7 @@ Vercel Serverless 入口：
 api/chat-proxy.js
 ```
 
-它只允许转发 `chat/completions` 与 `responses` 两个路径；云端中转只允许 `https://` 模型接口，并拒绝 localhost / 内网地址，避免被当作任意开放代理。中转函数带 55 秒上游超时保护，`vercel.json` 已为 `api/chat-proxy.js` 配置 `maxDuration: 60`。如果上游返回 `SocketTimeoutException` 或空响应，前端会显示更明确的网关/空响应错误，不再误报成单纯“模型返回为空”。
+它只允许转发 `chat/completions` 与 `responses` 两个路径；云端中转只允许 `https://` 模型接口，并拒绝 localhost / 内网地址，避免被当作任意开放代理。`vercel.json` 已为 `api/chat-proxy.js` 配置 `maxDuration: 300`；云端中转内部最多等待约 285 秒，给函数返回前端预留缓冲时间。`chat/completions` 在纯 JSON 兼容模式下会让上游使用 `stream: true` 并在中转侧收集完整文本，降低第三方兼容网关在长时间无输出时触发 `SocketTimeoutException` 的概率。如果上游仍返回 `SocketTimeoutException` 或空响应，前端会显示更明确的网关/空响应错误，不再误报成单纯“模型返回为空”。
 
 ### 输出格式策略与连接测试
 
@@ -125,7 +125,7 @@ AI 配置页新增“输出格式策略”：
 | JSON Object | 发送 `response_format: { type: "json_object" }` | 确认服务商支持 json_object 时使用 |
 | 严格 JSON Schema | 发送完整结构化 schema | 官方 OpenAI 或确认兼容 schema 的服务 |
 
-如果云端中转长时间无响应，先点“测试连接”。测试连接只会发送一个很小的“只返回 OK”请求；如果测试也不增加模型后台 token 用量，说明请求没有真正进入模型推理，通常是接口地址、模型名、Key、服务商网关或 Vercel 出口网络问题。
+如果云端中转长时间无响应，先点“测试连接”。测试连接只会发送一个很小的“只返回 OK”请求；如果测试也不增加模型后台 token 用量，说明请求没有真正进入模型推理，通常是接口地址、模型名、Key、服务商网关或 Vercel 出口网络问题。如果后台 token 用量已经增加但网页仍超时，通常是蓝图生成耗时超过当前函数/请求超时，请把请求超时调到 180 秒以上，并确认 Vercel Function Max Duration 已生效。
 
 ---
 

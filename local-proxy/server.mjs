@@ -9,7 +9,7 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:5173',
 ];
 const MIN_TIMEOUT_MS = 5_000;
-const MAX_TIMEOUT_MS = 180_000;
+const MAX_TIMEOUT_MS = 300_000;
 
 function getAllowedOrigins() {
   const extra = String(process.env.ALLOWED_ORIGINS || '')
@@ -114,7 +114,7 @@ function buildTargetUrl(baseUrl, path) {
 
 function clampTimeoutMs(value) {
   const candidate = Number(value);
-  if (!Number.isFinite(candidate)) return 60_000;
+  if (!Number.isFinite(candidate)) return 180_000;
   return Math.min(Math.max(candidate, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
@@ -137,9 +137,144 @@ function parseProviderTimeout(text) {
   return null;
 }
 
+function textFromDeltaContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') return '';
+      if (typeof part.text === 'string') return part.text;
+      if (typeof part.content === 'string') return part.content;
+      if (typeof part.value === 'string') return part.value;
+      return '';
+    })
+    .join('');
+}
+
+async function readOpenAiSseCompletion(upstream) {
+  const reader = upstream.body?.getReader?.();
+  if (!reader) {
+    return { text: await upstream.text(), finishReason: 'stop', usage: null, streamed: false };
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let finishReason = '';
+  let usage = null;
+
+  const handleEventPayload = (payload) => {
+    const data = payload.trim();
+    if (!data || data === '[DONE]') return;
+
+    let chunk;
+    try {
+      chunk = JSON.parse(data);
+    } catch {
+      return;
+    }
+
+    if (chunk?.error) {
+      const message =
+        typeof chunk.error === 'string'
+          ? chunk.error
+          : chunk.error?.message || '上游流式响应返回错误。';
+      throw new Error(message);
+    }
+
+    if (chunk?.usage) {
+      usage = chunk.usage;
+    }
+
+    const choice = Array.isArray(chunk?.choices) ? chunk.choices[0] : undefined;
+    if (!choice) return;
+
+    content += textFromDeltaContent(choice.delta?.content);
+    content += textFromDeltaContent(choice.message?.content);
+    if (typeof choice.text === 'string') content += choice.text;
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(':')) continue;
+      if (trimmed.startsWith('data:')) {
+        handleEventPayload(trimmed.slice(5));
+      }
+    }
+  }
+
+  const tail = `${buffer}${decoder.decode()}`.trim();
+  if (tail.startsWith('data:')) {
+    handleEventPayload(tail.slice(5));
+  }
+
+  return { text: content, finishReason: finishReason || 'stop', usage, streamed: true };
+}
+
+async function forwardNonStream({ target, apiKey, body, signal }) {
+  return fetch(target.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+async function forwardChatCompletionsAsUpstreamStream({ target, apiKey, body, signal }) {
+  const upstream = await fetch(target.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  });
+
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!upstream.ok || !contentType.includes('text/event-stream')) {
+    return upstream;
+  }
+
+  const completion = await readOpenAiSseCompletion(upstream);
+  return new Response(
+    JSON.stringify({
+      id: `chatcmpl-proxy-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: body?.model || 'unknown',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: completion.text },
+          finish_reason: completion.finishReason,
+        },
+      ],
+      ...(completion.usage ? { usage: completion.usage } : {}),
+      proxy: { upstreamStreamCollected: true },
+    }),
+    {
+      status: upstream.status,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    },
+  );
+}
+
 async function handleProxy(req, res) {
   const payload = await readBody(req);
-  const { baseUrl, apiKey, path, body, timeoutMs } = payload || {};
+  const { baseUrl, apiKey, path, body, timeoutMs, streamUpstream } = payload || {};
 
   if (!apiKey || typeof apiKey !== 'string') {
     sendJson(res, 400, { error: { message: '缺少 API Key。' } });
@@ -158,23 +293,18 @@ async function handleProxy(req, res) {
 
   let upstream;
   try {
-    upstream = await fetch(target.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    upstream =
+      streamUpstream && path === 'chat/completions'
+        ? await forwardChatCompletionsAsUpstreamStream({ target, apiKey, body, signal: controller.signal })
+        : await forwardNonStream({ target, apiKey, body, signal: controller.signal });
   } catch (error) {
     if (controller.signal.aborted) {
       sendJson(res, 504, {
         error: {
-          message: `本地代理等待上游模型服务超过 ${Math.round(timeout / 1000)} 秒。请检查模型服务状态、接口地址和网络。`,
+          message: `本地代理等待上游模型服务超过 ${Math.round(timeout / 1000)} 秒。请求已经可能进入模型推理，但未能在超时前返回完整结果。请调高请求超时或缩短提示词。`,
           code: 'UPSTREAM_TIMEOUT',
         },
-        proxy: { mode: 'local', targetHost: target.host, path },
+        proxy: { mode: 'local', targetHost: target.host, path, timeoutMs: timeout },
       });
       return;
     }
@@ -188,7 +318,7 @@ async function handleProxy(req, res) {
   if (providerTimeout) {
     sendJson(res, 504, {
       error: {
-        message: `上游模型网关超时：${providerTimeout}。建议使用“兼容纯 JSON”或缩短提示词后重试。`,
+        message: `上游模型网关超时：${providerTimeout}。建议保留上游流式收集、缩短提示词后重试。`,
         code: 'PROVIDER_TIMEOUT',
       },
       proxy: { mode: 'local', targetHost: target.host, path, upstreamStatus: upstream.status },
@@ -227,6 +357,7 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       name: 'ue-bp-copilot-local-proxy',
       listen: `http://127.0.0.1:${PORT}`,
+      maxTimeoutSeconds: Math.round(MAX_TIMEOUT_MS / 1000),
     });
     return;
   }

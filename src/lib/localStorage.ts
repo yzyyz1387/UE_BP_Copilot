@@ -109,10 +109,13 @@ export function loadStoredConfig(defaultConfig: AppConfig): AppConfig {
       outputFormatModeCandidate === 'plain_json'
         ? outputFormatModeCandidate
         : defaultConfig.outputFormatMode;
-    const requestTimeoutMs =
+    let requestTimeoutMs =
       Number.isFinite(requestTimeoutMsCandidate) && requestTimeoutMsCandidate >= 10000
-        ? Math.min(Math.max(requestTimeoutMsCandidate, 10000), 180000)
+        ? Math.min(Math.max(requestTimeoutMsCandidate, 10000), 300000)
         : defaultConfig.requestTimeoutMs;
+    if ((connectionMode === 'cloud_proxy' || connectionMode === 'local_proxy') && requestTimeoutMs < 180000) {
+      requestTimeoutMs = 180000;
+    }
 
     return {
       ...defaultConfig,

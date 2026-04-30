@@ -20,6 +20,7 @@ interface ProxyPayload {
   path: OpenAiPath;
   body: unknown;
   timeoutMs?: number;
+  streamUpstream?: boolean;
 }
 
 export interface ConnectionTestResult {
@@ -31,7 +32,7 @@ export interface ConnectionTestResult {
 
 const LOCAL_PROXY_FALLBACK_URL = 'http://127.0.0.1:8787';
 const MIN_REQUEST_TIMEOUT_MS = 10_000;
-const MAX_REQUEST_TIMEOUT_MS = 180_000;
+const MAX_REQUEST_TIMEOUT_MS = 300_000;
 
 function normalizeOpenAiBaseUrl(baseUrl: string): string {
   return baseUrl
@@ -72,7 +73,7 @@ function getProxyEndpoint(config: AppConfig): string {
 
 function getRequestTimeoutMs(config: AppConfig): number {
   const candidate = Number(config.requestTimeoutMs);
-  if (!Number.isFinite(candidate)) return 60_000;
+  if (!Number.isFinite(candidate)) return 180_000;
   return Math.min(Math.max(candidate, MIN_REQUEST_TIMEOUT_MS), MAX_REQUEST_TIMEOUT_MS);
 }
 
@@ -207,7 +208,12 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs: number): Pro
   return parsed ?? {};
 }
 
-async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown): Promise<unknown> {
+async function postModelJson(
+  config: AppConfig,
+  path: OpenAiPath,
+  body: unknown,
+  options: { streamUpstream?: boolean } = {},
+): Promise<unknown> {
   const apiKey = config.apiKey.trim();
   const timeoutMs = getRequestTimeoutMs(config);
 
@@ -228,6 +234,7 @@ async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown)
     path,
     body,
     timeoutMs,
+    streamUpstream: options.streamUpstream,
   };
 
   return fetchJson(getProxyEndpoint(config), {
@@ -236,7 +243,7 @@ async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown)
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
-  }, timeoutMs + 5_000);
+  }, Math.min(timeoutMs + 15_000, MAX_REQUEST_TIMEOUT_MS + 15_000));
 }
 
 function extractJsonString(text: string): string {
@@ -385,7 +392,7 @@ function getTroubleshootingText(config: AppConfig): string {
       '当前连接方式：云端中转。',
       ...common,
       '请确认接口地址是 OpenAI-compatible 的 /v1 根地址，例如 https://api.example.com/v1。',
-      '如果模型后台 token 用量没有变化，通常表示请求卡在兼容网关或中转到上游之间；请优先使用“兼容纯 JSON”并点“测试连接”。',
+      '如果模型后台 token 用量没有变化，通常表示请求卡在兼容网关或中转到上游之间；请优先使用“兼容纯 JSON”并点“测试连接”。如果 token 用量有变化但仍超时，通常是生成耗时超过当前云函数时限，请把请求超时调到 180 秒以上，或使用本地代理。',
       '本站中转函数只转发本次请求，前端代码不会保存密钥；但密钥会经过本站 Serverless。',
     ].join('\n');
   }
@@ -530,7 +537,9 @@ async function requestByChatCompletions(
   for (let i = 0; i < flavors.length; i += 1) {
     const flavor = flavors[i];
     try {
-      const data = await postModelJson(config, path, buildChatCompletionsBody(config, prompt, flavor));
+      const data = await postModelJson(config, path, buildChatCompletionsBody(config, prompt, flavor), {
+        streamUpstream: config.connectionMode !== 'direct' && flavor === 'plain_json',
+      });
       const rawText = extractTextFromChatCompletions(data);
       const response = parseWorkspaceResponse(rawText);
       return {

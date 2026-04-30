@@ -54,5 +54,6 @@
 18. 新增输出格式策略：自动选择、兼容纯 JSON、JSON Object、严格 JSON Schema。自动模式下，官方 OpenAI 才优先使用 JSON Schema，第三方 OpenAI-compatible 默认不发送 `response_format`，避免兼容网关卡住导致后台 token 用量不变。
 19. 新增“测试连接”按钮，只发送一个极小的 `OK` 请求，用于判断云端中转是否真正打到模型服务。
 20. `api/chat-proxy.js` 增加上游超时保护、空响应识别和上游 `SocketTimeoutException` 识别，错误会明确显示为中转超时、上游网关超时或空响应。
-21. `vercel.json` 为 `api/chat-proxy.js` 配置 `maxDuration: 60`，避免复杂蓝图请求被默认短超时过早截断。
-22. 本地代理同步支持请求超时与上游 timeout/空响应识别；网页下载包已同步更新。
+21. `vercel.json` 为 `api/chat-proxy.js` 配置 `maxDuration: 300`；云端中转内部最多等待约 285 秒，避免复杂蓝图请求被 60 秒函数时限过早截断。
+22. `chat/completions` 在纯 JSON 兼容模式下支持上游 `stream: true` 收集，降低 LongCat 等兼容网关长时间无输出导致的 SocketTimeoutException 概率。
+23. 本地代理同步支持更长请求超时、上游流式收集与上游 timeout/空响应识别；网页下载包已同步更新。

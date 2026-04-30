@@ -26,7 +26,7 @@ const CONNECTION_MODES: Array<{
     title: '云端中转',
     tag: '解决 CORS',
     summary: '网页请求本站 /api/chat-proxy，再由 Serverless 转发到模型接口。',
-    detail: '用户仍然填写自己的接口和 Key；本站代码只转发本次请求，不保存 Key 或请求体。Key 会经过本站 Serverless。',
+    detail: '用户仍然填写自己的接口和 Key；本站代码只转发本次请求，不保存 Key 或请求体。Key 会经过本站 Serverless。复杂蓝图建议把请求超时调到 180 秒以上。',
   },
   {
     value: 'local_proxy',
@@ -50,7 +50,7 @@ const OUTPUT_FORMAT_OPTIONS: Array<{
   {
     value: 'plain_json',
     title: '兼容纯 JSON',
-    hint: '不发送 response_format，最适合 LongCat、DeepSeek 等兼容接口排查超时。',
+    hint: '不发送 response_format，最适合 LongCat、DeepSeek 等兼容接口；中转/本地代理会尝试用上游流式收集降低网关超时。',
   },
   {
     value: 'json_object',
@@ -84,6 +84,7 @@ export function SettingsPanel({ config, testingConnection = false, onChange, onT
   const handleModeChange = (mode: ConnectionMode) => {
     onChange({
       connectionMode: mode,
+      requestTimeoutMs: mode !== 'direct' && config.requestTimeoutMs < 180000 ? 180000 : config.requestTimeoutMs,
       localProxyUrl: mode === 'local_proxy' && !config.localProxyUrl.trim()
         ? 'http://127.0.0.1:8787'
         : config.localProxyUrl,
@@ -185,11 +186,13 @@ export function SettingsPanel({ config, testingConnection = false, onChange, onT
             value={String(config.requestTimeoutMs)}
             onChange={(event) => onChange({ requestTimeoutMs: Number(event.target.value) })}
           >
-            <option value="30000">30 秒</option>
             <option value="60000">60 秒</option>
-            <option value="90000">90 秒</option>
             <option value="120000">120 秒</option>
+            <option value="180000">180 秒（推荐）</option>
+            <option value="240000">240 秒</option>
+            <option value="300000">300 秒</option>
           </select>
+          <small>云端中转依赖 Vercel 函数时长；新版默认按 300 秒函数配置，实际中转会预留少量返回时间。</small>
         </label>
 
         {config.connectionMode === 'local_proxy' ? (
