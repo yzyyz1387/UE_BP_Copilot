@@ -192,10 +192,36 @@ async function readOpenAiSseCompletion(upstream) {
 
   const decoder = new TextDecoder();
   let buffer = '';
-  let content = '';
-  let reasoningContent = '';
+  let deltaContent = '';
+  let messageContentSnapshot = '';
+  let legacyText = '';
+  let deltaReasoningContent = '';
+  let messageReasoningSnapshot = '';
   let finishReason = '';
   let usage = null;
+
+  const mergeSnapshotOrChunks = (current, incoming) => {
+    if (!incoming) return current;
+    if (!current) return incoming;
+    if (incoming === current) return current;
+    // Some OpenAI-compatible gateways send an accumulated message.content snapshot
+    // in stream chunks. Treat a growing prefix as a replacement, not as another chunk.
+    if (incoming.startsWith(current)) return incoming;
+    if (current.startsWith(incoming) || current.endsWith(incoming)) return current;
+    return current + incoming;
+  };
+
+  const pickFinalText = (deltaText, snapshotText, fallbackText) => {
+    if (snapshotText && deltaText) {
+      if (snapshotText === deltaText || snapshotText.startsWith(deltaText) || deltaText.startsWith(snapshotText)) {
+        return snapshotText.length >= deltaText.length ? snapshotText : deltaText;
+      }
+      // If both contain a full JSON object, prefer the longer complete-looking text,
+      // but never concatenate them; concatenating causes "{...}{...}" parse errors.
+      return snapshotText.length >= deltaText.length ? snapshotText : deltaText;
+    }
+    return deltaText || snapshotText || fallbackText;
+  };
 
   const handleEventPayload = (payload) => {
     const data = payload.trim();
@@ -223,13 +249,18 @@ async function readOpenAiSseCompletion(upstream) {
     const choice = Array.isArray(chunk?.choices) ? chunk.choices[0] : undefined;
     if (!choice) return;
 
-    content += textFromDeltaContent(choice.delta?.content);
-    content += textFromDeltaContent(choice.message?.content);
-    reasoningContent += textFromDeltaContent(choice.delta?.reasoning_content);
-    reasoningContent += textFromDeltaContent(choice.message?.reasoning_content);
-    reasoningContent += textFromDeltaContent(choice.delta?.reasoning);
-    reasoningContent += textFromDeltaContent(choice.message?.reasoning);
-    if (typeof choice.text === 'string') content += choice.text;
+    const deltaText = textFromDeltaContent(choice.delta?.content);
+    const messageText = textFromDeltaContent(choice.message?.content);
+    const deltaReasoning =
+      textFromDeltaContent(choice.delta?.reasoning_content) || textFromDeltaContent(choice.delta?.reasoning);
+    const messageReasoning =
+      textFromDeltaContent(choice.message?.reasoning_content) || textFromDeltaContent(choice.message?.reasoning);
+
+    if (deltaText) deltaContent += deltaText;
+    if (messageText) messageContentSnapshot = mergeSnapshotOrChunks(messageContentSnapshot, messageText);
+    if (deltaReasoning) deltaReasoningContent += deltaReasoning;
+    if (messageReasoning) messageReasoningSnapshot = mergeSnapshotOrChunks(messageReasoningSnapshot, messageReasoning);
+    if (typeof choice.text === 'string') legacyText += choice.text;
     if (choice.finish_reason) finishReason = choice.finish_reason;
   };
 
@@ -250,12 +281,18 @@ async function readOpenAiSseCompletion(upstream) {
     }
   }
 
-  const tail = `${buffer}${decoder.decode()}`.trim();
+  const tail = (buffer + decoder.decode()).trim();
   if (tail.startsWith('data:')) {
     handleEventPayload(tail.slice(5));
   }
 
-  return { text: content, reasoningText: reasoningContent, finishReason: finishReason || 'stop', usage, streamed: true };
+  return {
+    text: pickFinalText(deltaContent, messageContentSnapshot, legacyText),
+    reasoningText: pickFinalText(deltaReasoningContent, messageReasoningSnapshot, ''),
+    finishReason: finishReason || 'stop',
+    usage,
+    streamed: true,
+  };
 }
 
 async function forwardNonStream({ target, apiKey, body, signal }) {

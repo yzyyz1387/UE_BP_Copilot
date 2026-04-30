@@ -1,6 +1,7 @@
 import { OUTPUT_SHAPE_GUIDE, SYSTEM_PROMPT, UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA } from '../schema';
 import type { AppConfig, BlueprintLibrary, BlueprintPlan, BlueprintWorkspaceResponse, ChatMessage, GenerationResult } from '../types';
 import { buildGenerationPrompt } from './prompt';
+import { parseJsonFromText } from './jsonExtract';
 import { normalizeBlueprintWorkspaceResponse } from './workspaceResponse';
 
 interface GenerateArgs {
@@ -246,37 +247,12 @@ async function postModelJson(
   }, Math.min(timeoutMs + 15_000, MAX_REQUEST_TIMEOUT_MS + 15_000));
 }
 
-function extractJsonString(text: string): string {
-  const trimmed = text.trim();
-
-  if (!trimmed) {
-    throw new Error('模型返回为空。');
-  }
-
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    return trimmed;
-  }
-
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) {
-    return fenced[1].trim();
-  }
-
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start !== -1 && end > start) {
-    return trimmed.slice(start, end + 1);
-  }
-
-  throw new Error('无法从模型返回中提取 JSON。');
-}
-
 function parseWorkspaceResponse(rawText: string, structured?: unknown): BlueprintWorkspaceResponse {
   if (structured && typeof structured === 'object') {
     return normalizeBlueprintWorkspaceResponse(structured);
   }
 
-  return normalizeBlueprintWorkspaceResponse(JSON.parse(extractJsonString(rawText)));
+  return normalizeBlueprintWorkspaceResponse(parseJsonFromText(rawText, { emptyMessage: '模型返回为空。', sourceLabel: '模型返回' }));
 }
 
 function extractTextFromResponseApi(data: unknown): string {
@@ -414,7 +390,7 @@ function buildCompatPrompt(prompt: string): string {
     prompt,
     '',
     '兼容模式要求：',
-    '1. 只返回一个 JSON 对象。',
+    '1. 只返回一个 JSON 对象；结束后不要再追加第二个 JSON、说明文字或 Markdown。',
     '2. 不要输出 Markdown，不要输出注释。',
     '3. 根对象必须是 BlueprintWorkspaceResponse：responseType 固定为 blueprint_workspace_operation，operations 至少一项。',
     '4. 如果要覆盖当前蓝图，返回 action=replace_current_blueprint；如果要新增到用户/文件夹，返回 action=create_blueprint。',

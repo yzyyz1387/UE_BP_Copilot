@@ -64,3 +64,9 @@
 - 连接测试的 `max_tokens / max_output_tokens` 从 16 提高到 128，避免测试请求的输出额度被思考过程完全消耗。
 - 云端中转和本地代理的上游流式收集现在会保留 `reasoning_content`，便于前端给出更准确的诊断。
 - 新建蓝图、复制蓝图、删除蓝图、删除变量全部替换为站内自定义弹窗，不再使用浏览器原生 `prompt / confirm / alert`。
+
+## 2026-04-30 云端中转 JSON 解析与流式收集修复
+
+- 修复部分 OpenAI-compatible 服务在流式模式下同时返回 `delta.content` 和累计版 `message.content` 时，被中转服务拼接成 `{...}{...}`，导致前端报 `Unexpected non-whitespace character after JSON` 的问题。
+- 前端新增鲁棒 JSON 提取：当模型在合法 JSON 后追加了额外文本、重复 JSON 或 Markdown 包裹时，会优先提取第一个可解析的 BlueprintWorkspaceResponse / BlueprintPlan。
+- 本地代理与云端中转同步修复，网页下载的本地代理包已更新。

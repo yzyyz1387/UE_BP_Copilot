@@ -19,6 +19,7 @@ import {
 } from './lib/localStorage';
 import { normalizeBlueprintPlan } from './lib/blueprintTransform';
 import { generateBlueprintPlan, testModelConnection } from './lib/openaiClient';
+import { parseJsonFromText } from './lib/jsonExtract';
 import { buildExternalPromptTemplate } from './lib/prompt';
 import { normalizeBlueprintWorkspaceResponse } from './lib/workspaceResponse';
 import type {
@@ -133,18 +134,6 @@ function downloadJsonFile(plan: BlueprintPlan): void {
   link.click();
   link.remove();
   URL.revokeObjectURL(href);
-}
-
-function extractJsonString(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error('导入内容为空。');
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return trimmed;
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) return fenced[1].trim();
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
-  throw new Error('没有找到可解析的 JSON 对象。');
 }
 
 async function copyToClipboard(text: string): Promise<void> {
@@ -723,7 +712,7 @@ export default function App() {
 
   const handleApplyImport = () => {
     try {
-      const parsed = JSON.parse(extractJsonString(importText));
+      const parsed = parseJsonFromText(importText, { emptyMessage: '导入内容为空。', sourceLabel: '导入内容' });
       const workspaceResponse = normalizeBlueprintWorkspaceResponse(parsed);
       applyWorkspaceResponse(workspaceResponse, '导入工作区 JSON', messages);
     } catch (reason) {
