@@ -4,6 +4,7 @@ import { ChatPanel } from './components/ChatPanel';
 import { HeaderBar } from './components/HeaderBar';
 import { ImportPanel } from './components/ImportPanel';
 import { InspectorTabs, type InspectorTab } from './components/InspectorTabs';
+import { ProjectDialog, type ProjectDialogState } from './components/ProjectDialog';
 import { ProjectSidebar } from './components/ProjectSidebar';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Toast, useToast } from './components/Toast';
@@ -232,6 +233,7 @@ export default function App() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [statusText, setStatusText] = useState('本地优先 · 支持直连 / 云端中转 / 本地代理');
   const [endpointLabel, setEndpointLabel] = useState('');
+  const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
 
   const activeProject = useMemo(
     () => library.projects.find((project) => project.id === library.activeProjectId) ?? library.projects[0],
@@ -459,13 +461,19 @@ export default function App() {
   };
 
   const handleCreateProject = () => {
-    const userName = window.prompt('用户名称', activeProject?.userName || '默认用户')?.trim();
-    if (!userName) return;
-    const folderPath = window.prompt('文件夹路径', activeProject?.folderPath || '未分类')?.trim();
-    if (!folderPath) return;
-    const name = window.prompt('蓝图名称', '新建蓝图')?.trim();
-    if (!name) return;
+    setProjectDialog({
+      kind: 'create',
+      userName: activeProject?.userName || '默认用户',
+      folderPath: activeProject?.folderPath || '未分类',
+      name: '新建蓝图',
+    });
+  };
 
+  const handleCreateProjectFromDialog = ({
+    userName,
+    folderPath,
+    name,
+  }: { userName: string; folderPath: string; name: string }) => {
     const nextPlan = normalizeBlueprintPlan({
       ...DEMO_BLUEPRINT,
       meta: {
@@ -488,11 +496,19 @@ export default function App() {
     setEndpointLabel('本地新建');
     setCurrentPlan(nextPlan, `已新建：${name}`);
     setRightPanelTab('chat');
+    setProjectDialog(null);
+    showToast(`已新建：${userName} / ${folderPath} / ${name}`, 'success');
   };
 
   const handleDuplicateProject = () => {
-    const name = window.prompt('复制后的蓝图名称', `${plan.meta.title || activeProject?.name || '蓝图'} 副本`)?.trim();
-    if (!name || !activeProject) return;
+    setProjectDialog({
+      kind: 'duplicate',
+      name: `${plan.meta.title || activeProject?.name || '蓝图'} 副本`,
+    });
+  };
+
+  const handleDuplicateProjectFromDialog = (name: string) => {
+    if (!activeProject) return;
     const nextPlan = normalizeBlueprintPlan({
       ...plan,
       meta: { ...plan.meta, title: name },
@@ -517,8 +533,9 @@ export default function App() {
     setEndpointLabel('本地复制');
     setCurrentPlan(nextPlan, `已复制：${name}`);
     setRightPanelTab('chat');
+    setProjectDialog(null);
+    showToast(`已复制：${name}`, 'success');
   };
-
   const updateActivePlan = (nextPlan: BlueprintPlan, status: string, assistantText?: string) => {
     const normalizedPlan = normalizeBlueprintPlan(nextPlan);
     savePlanToActiveProject(normalizedPlan);
@@ -622,14 +639,28 @@ export default function App() {
       showToast('至少需要保留一个本地蓝图。', 'error');
       return;
     }
-    if (!window.confirm(`确定删除“${activeProject.name}”？此操作只删除浏览器本地存储中的这份蓝图。`)) return;
+    setProjectDialog({
+      kind: 'delete',
+      name: activeProject.name,
+      path: getProjectPath(activeProject),
+    });
+  };
 
-    const remaining = library.projects.filter((project) => project.id !== activeProject.id);
+  const handleConfirmDeleteProject = () => {
+    if (!activeProject) return;
+    if (library.projects.length <= 1) {
+      showToast('至少需要保留一个本地蓝图。', 'error');
+      setProjectDialog(null);
+      return;
+    }
+
+    const deletedProject = activeProject;
+    const remaining = library.projects.filter((project) => project.id !== deletedProject.id);
     const nextActive = remaining[0];
     const nextPlan = normalizeBlueprintPlan(nextActive.plan);
     const nextMessages = [
       ...getProjectChatMessages(nextActive, nextPlan),
-      createMessage('assistant', `已删除“${activeProject.name}”，并打开“${nextActive.name}”。`),
+      createMessage('assistant', `已删除“${deletedProject.name}”，并打开“${nextActive.name}”。`),
     ];
     const projectsWithChat = remaining.map((project) =>
       project.id === nextActive.id ? attachChatToProject(project, nextMessages) : project,
@@ -640,6 +671,8 @@ export default function App() {
     setEndpointLabel('本地存储');
     setCurrentPlan(nextPlan, `已删除，当前打开：${nextActive.name}`);
     setRightPanelTab('chat');
+    setProjectDialog(null);
+    showToast(`已删除：${deletedProject.name}`, 'success');
   };
 
   const handleLoadDemo = () => {
@@ -855,6 +888,14 @@ export default function App() {
           ) : null}
         </aside>
       </main>
+
+      <ProjectDialog
+        dialog={projectDialog}
+        onClose={() => setProjectDialog(null)}
+        onCreate={handleCreateProjectFromDialog}
+        onDuplicate={handleDuplicateProjectFromDialog}
+        onConfirmDelete={handleConfirmDeleteProject}
+      />
 
       <Toast toasts={toasts} onDismiss={dismissToast} />
     </div>

@@ -160,6 +160,8 @@ export function ProjectSidebar({
   const [variableFormOpen, setVariableFormOpen] = useState(false);
   const [editingVariableName, setEditingVariableName] = useState<string | null>(null);
   const [variableForm, setVariableForm] = useState<VariableFormState>(EMPTY_VARIABLE_FORM);
+  const [variableError, setVariableError] = useState('');
+  const [pendingDeleteVariableName, setPendingDeleteVariableName] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeProject) return;
@@ -177,18 +179,21 @@ export function ProjectSidebar({
   };
 
   const beginCreateVariable = () => {
+    setVariableError('');
     setEditingVariableName(null);
     setVariableForm(EMPTY_VARIABLE_FORM);
     setVariableFormOpen(true);
   };
 
   const beginEditVariable = (variable: BlueprintVariable) => {
+    setVariableError('');
     setEditingVariableName(variable.name);
     setVariableForm(createFormFromVariable(variable));
     setVariableFormOpen(true);
   };
 
   const cancelVariableForm = () => {
+    setVariableError('');
     setVariableFormOpen(false);
     setEditingVariableName(null);
     setVariableForm(EMPTY_VARIABLE_FORM);
@@ -198,7 +203,7 @@ export function ProjectSidebar({
     event.preventDefault();
     const nextVariable = createVariableFromForm(variableForm);
     if (!nextVariable.name) {
-      window.alert('变量名称不能为空。');
+      setVariableError('变量名称不能为空。');
       return;
     }
 
@@ -209,9 +214,11 @@ export function ProjectSidebar({
       return currentName === nextName && currentName !== oldName;
     });
     if (duplicated) {
-      window.alert(`变量“${nextVariable.name}”已存在。`);
+      setVariableError(`变量“${nextVariable.name}”已存在。`);
       return;
     }
+
+    setVariableError('');
 
     if (editingVariableName) {
       onUpdateVariable(editingVariableName, nextVariable);
@@ -222,9 +229,14 @@ export function ProjectSidebar({
   };
 
   const handleDeleteVariable = (name: string) => {
-    if (!window.confirm(`确定删除变量“${name}”？`)) return;
-    onDeleteVariable(name);
-    if (editingVariableName === name) cancelVariableForm();
+    setPendingDeleteVariableName(name);
+  };
+
+  const confirmDeleteVariable = () => {
+    if (!pendingDeleteVariableName) return;
+    onDeleteVariable(pendingDeleteVariableName);
+    if (editingVariableName === pendingDeleteVariableName) cancelVariableForm();
+    setPendingDeleteVariableName(null);
   };
 
   return (
@@ -435,6 +447,7 @@ export function ProjectSidebar({
                       生成时公开
                     </label>
                   </div>
+                  {variableError ? <p className="variable-form__error">{variableError}</p> : null}
                   <div className="variable-form__actions">
                     <button type="submit" className="nav-action">
                       {editingVariableName ? '保存变量' : '添加变量'}
@@ -469,6 +482,34 @@ export function ProjectSidebar({
           </button>
         </div>
       )}
+
+      {pendingDeleteVariableName ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setPendingDeleteVariableName(null);
+        }}>
+          <section className="app-dialog app-dialog--small" role="dialog" aria-modal="true" aria-labelledby="variable-delete-title">
+            <div className="app-dialog__header">
+              <div>
+                <strong id="variable-delete-title">删除用户变量</strong>
+                <span>这个操作会从当前蓝图的 variables 中移除变量。</span>
+              </div>
+              <button type="button" className="app-dialog__close" onClick={() => setPendingDeleteVariableName(null)} aria-label="关闭">
+                ×
+              </button>
+            </div>
+            <div className="app-dialog__body">
+              <div className="dialog-warning">
+                <strong>确定删除变量“{pendingDeleteVariableName}”？</strong>
+                <p>如果蓝图节点还引用这个变量，请记得同步调整节点说明和连线。</p>
+              </div>
+              <div className="app-dialog__actions">
+                <button type="button" className="dialog-button" onClick={() => setPendingDeleteVariableName(null)}>取消</button>
+                <button type="button" className="dialog-button dialog-button--danger" onClick={confirmDeleteVariable}>确认删除</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </aside>
   );
 }

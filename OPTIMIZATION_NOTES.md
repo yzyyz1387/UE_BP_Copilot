@@ -57,3 +57,10 @@
 21. `vercel.json` 为 `api/chat-proxy.js` 配置 `maxDuration: 300`；云端中转内部最多等待约 285 秒，避免复杂蓝图请求被 60 秒函数时限过早截断。
 22. `chat/completions` 在纯 JSON 兼容模式下支持上游 `stream: true` 收集，降低 LongCat 等兼容网关长时间无输出导致的 SocketTimeoutException 概率。
 23. 本地代理同步支持更长请求超时、上游流式收集与上游 timeout/空响应识别；网页下载包已同步更新。
+
+## 2026-04-30 · LongCat Thinking 响应与自定义弹窗修复
+
+- 修复连接测试对 `chat/completions` Thinking 模型响应的误判：当服务商返回 `reasoning_content` 但暂未返回 `message.content` 时，不再直接提示“模型返回为空”，而是识别为接口已打通并给出 Thinking/输出截断提示。
+- 连接测试的 `max_tokens / max_output_tokens` 从 16 提高到 128，避免测试请求的输出额度被思考过程完全消耗。
+- 云端中转和本地代理的上游流式收集现在会保留 `reasoning_content`，便于前端给出更准确的诊断。
+- 新建蓝图、复制蓝图、删除蓝图、删除变量全部替换为站内自定义弹窗，不再使用浏览器原生 `prompt / confirm / alert`。

@@ -310,20 +310,57 @@ function extractTextFromResponseApi(data: unknown): string {
   return chunks.join('\n').trim();
 }
 
-function extractTextFromChatCompletions(data: unknown): string {
+interface ChatCompletionTextParts {
+  text: string;
+  reasoningText: string;
+  finishReason: string;
+  hasAssistantMessage: boolean;
+  refusal: string;
+}
+
+type ChatMessageContent =
+  | string
+  | Array<{ text?: string; content?: string; value?: string }>
+  | null
+  | undefined;
+
+function contentToText(content: ChatMessageContent): string {
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+
+  return content
+    .map((item) => item.text ?? item.content ?? item.value ?? '')
+    .join('\n')
+    .trim();
+}
+
+function unknownToText(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (!Array.isArray(value)) return '';
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      if (!item || typeof item !== 'object') return '';
+      const part = item as { text?: string; content?: string; value?: string };
+      return part.text ?? part.content ?? part.value ?? '';
+    })
+    .join('\n')
+    .trim();
+}
+
+function getChatCompletionTextParts(data: unknown): ChatCompletionTextParts {
   const error = providerErrorMessage(data);
   if (error) throw new Error(error);
 
   const payload = data as {
     choices?: Array<{
+      finish_reason?: string | null;
       message?: {
+        role?: string;
         refusal?: string;
-        content?:
-          | string
-          | Array<{
-              text?: string;
-              content?: string;
-            }>;
+        content?: ChatMessageContent;
+        reasoning_content?: unknown;
+        reasoning?: unknown;
       };
       text?: string;
     }>;
@@ -331,23 +368,42 @@ function extractTextFromChatCompletions(data: unknown): string {
 
   const choice = payload.choices?.[0];
   const message = choice?.message;
-  if (typeof message?.refusal === 'string' && message.refusal) {
-    throw new Error(`模型拒绝返回结构化结果：${message.refusal}`);
+  const contentText = contentToText(message?.content);
+  const choiceText = typeof choice?.text === 'string' ? choice.text.trim() : '';
+  const reasoningText = unknownToText(message?.reasoning_content ?? message?.reasoning);
+
+  return {
+    text: contentText || choiceText,
+    reasoningText,
+    finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : '',
+    hasAssistantMessage: Boolean(message || choice?.text),
+    refusal: typeof message?.refusal === 'string' ? message.refusal.trim() : '',
+  };
+}
+
+function extractTextFromChatCompletions(data: unknown): string {
+  const parts = getChatCompletionTextParts(data);
+
+  if (parts.refusal) {
+    throw new Error(`模型拒绝返回结构化结果：${parts.refusal}`);
   }
 
-  if (typeof message?.content === 'string') {
-    return message.content;
+  if (parts.text) {
+    return parts.text;
   }
 
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((item) => item.text ?? item.content ?? '')
-      .join('\n')
-      .trim();
+  if (parts.reasoningText) {
+    const finishLabel = parts.finishReason ? `，finish_reason=${parts.finishReason}` : '';
+    const preview = parts.reasoningText.replace(/\s+/g, ' ').slice(0, 120);
+    throw new Error(
+      `模型只返回了 reasoning_content，没有返回最终 content${finishLabel}。` +
+      '这通常是 Thinking 模型把输出额度用在思考过程上，或被 length 截断。请调高最大输出上限、换非 Thinking 模型，或确认服务商会把最终 JSON 放到 message.content。' +
+      ` reasoning 预览：${preview}`,
+    );
   }
 
-  if (typeof choice?.text === 'string') {
-    return choice.text;
+  if (parts.finishReason === 'length') {
+    throw new Error('模型输出被 length 截断，且没有返回可解析的 content。请调高最大输出上限、缩短提示词，或换用非 Thinking 模型。');
   }
 
   return '';
@@ -573,7 +629,7 @@ export async function testModelConnection(config: AppConfig): Promise<Connection
               { role: 'system', content: '你是接口连通性测试器，只返回 OK。' },
               { role: 'user', content: '请只返回 OK 两个字。' },
             ],
-            max_output_tokens: 16,
+            max_output_tokens: 128,
           }
         : {
             model: config.model,
@@ -581,11 +637,44 @@ export async function testModelConnection(config: AppConfig): Promise<Connection
               { role: 'system', content: '你是接口连通性测试器，只返回 OK。' },
               { role: 'user', content: '请只返回 OK 两个字。' },
             ],
-            max_tokens: 16,
+            max_tokens: 128,
           },
     );
 
-    const rawText = path === 'responses' ? extractTextFromResponseApi(data) : extractTextFromChatCompletions(data);
+    if (path === 'chat/completions') {
+      const parts = getChatCompletionTextParts(data);
+      if (parts.refusal) {
+        throw new Error(`模型拒绝返回测试内容：${parts.refusal}`);
+      }
+
+      const rawText = parts.text.trim();
+      if (rawText) {
+        return {
+          ok: true,
+          message: `连接测试成功，模型返回：${rawText.slice(0, 80)}`,
+          endpointLabel: `${connectionModeLabel(config)} · /${path} · connection test`,
+          rawText,
+        };
+      }
+
+      if (parts.hasAssistantMessage || parts.reasoningText) {
+        const finishText = parts.finishReason ? `，finish_reason=${parts.finishReason}` : '';
+        const reasoningPreview = parts.reasoningText.replace(/\s+/g, ' ').slice(0, 80);
+        const message = parts.reasoningText
+          ? `连接已打通：模型返回了 reasoning_content 但没有返回最终 content${finishText}。这常见于 Thinking 模型或测试输出额度被思考过程消耗；正式生成时请使用 180 秒以上超时，必要时换非 Thinking 模型。`
+          : `连接已打通：接口有 choices 响应但 content 为空${finishText}。正式生成时如果仍为空，请检查模型是否会把最终结果写入 message.content。`;
+        return {
+          ok: true,
+          message,
+          endpointLabel: `${connectionModeLabel(config)} · /${path} · connection test · diagnostic`,
+          rawText: reasoningPreview || JSON.stringify(data).slice(0, 300),
+        };
+      }
+
+      throw new Error('连接测试有 HTTP 响应，但没有检测到 chat choices 内容。请检查模型名，或尝试切换 chat/completions 与 responses。');
+    }
+
+    const rawText = extractTextFromResponseApi(data);
     if (!rawText.trim()) {
       throw new Error('连接测试有 HTTP 响应，但模型内容为空。请检查模型名，或尝试切换 chat/completions 与 responses。');
     }

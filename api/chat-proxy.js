@@ -193,6 +193,7 @@ async function readOpenAiSseCompletion(upstream) {
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  let reasoningContent = '';
   let finishReason = '';
   let usage = null;
 
@@ -224,6 +225,10 @@ async function readOpenAiSseCompletion(upstream) {
 
     content += textFromDeltaContent(choice.delta?.content);
     content += textFromDeltaContent(choice.message?.content);
+    reasoningContent += textFromDeltaContent(choice.delta?.reasoning_content);
+    reasoningContent += textFromDeltaContent(choice.message?.reasoning_content);
+    reasoningContent += textFromDeltaContent(choice.delta?.reasoning);
+    reasoningContent += textFromDeltaContent(choice.message?.reasoning);
     if (typeof choice.text === 'string') content += choice.text;
     if (choice.finish_reason) finishReason = choice.finish_reason;
   };
@@ -250,7 +255,7 @@ async function readOpenAiSseCompletion(upstream) {
     handleEventPayload(tail.slice(5));
   }
 
-  return { text: content, finishReason: finishReason || 'stop', usage, streamed: true };
+  return { text: content, reasoningText: reasoningContent, finishReason: finishReason || 'stop', usage, streamed: true };
 }
 
 async function forwardNonStream({ target, apiKey, body, signal }) {
@@ -291,7 +296,11 @@ async function forwardChatCompletionsAsUpstreamStream({ target, apiKey, body, si
       choices: [
         {
           index: 0,
-          message: { role: 'assistant', content: completion.text },
+          message: {
+            role: 'assistant',
+            content: completion.text,
+            ...(completion.reasoningText ? { reasoning_content: completion.reasoningText } : {}),
+          },
           finish_reason: completion.finishReason,
         },
       ],
