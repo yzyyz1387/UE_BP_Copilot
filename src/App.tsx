@@ -26,6 +26,7 @@ import type {
   BlueprintOperationTarget,
   BlueprintPlan,
   BlueprintProject,
+  BlueprintVariable,
   BlueprintWorkspaceResponse,
   ChatMessage,
 } from './types';
@@ -398,6 +399,72 @@ export default function App() {
     setCurrentPlan(nextPlan, `已复制：${name}`, '已把当前蓝图复制成新的本地文件。');
   };
 
+  const updateActivePlan = (nextPlan: BlueprintPlan, status: string, assistantText?: string) => {
+    const normalizedPlan = normalizeBlueprintPlan(nextPlan);
+    savePlanToActiveProject(normalizedPlan);
+    setEndpointLabel('本地变量');
+    setCurrentPlan(normalizedPlan, status, assistantText);
+  };
+
+  const hasVariableName = (variables: BlueprintVariable[], name: string, exceptName = '') => {
+    const normalizedName = name.trim().toLowerCase();
+    const normalizedExcept = exceptName.trim().toLowerCase();
+    return variables.some((variable) => {
+      const currentName = variable.name.trim().toLowerCase();
+      return currentName === normalizedName && currentName !== normalizedExcept;
+    });
+  };
+
+  const handleCreateVariable = (variable: BlueprintVariable) => {
+    const nextName = variable.name.trim();
+    if (!nextName) {
+      showToast('变量名称不能为空。', 'error');
+      return;
+    }
+    if (hasVariableName(plan.variables, nextName)) {
+      showToast(`变量“${nextName}”已存在。`, 'error');
+      return;
+    }
+
+    const nextPlan = {
+      ...plan,
+      variables: [...plan.variables, { ...variable, name: nextName }],
+    };
+    updateActivePlan(nextPlan, `已添加变量：${nextName}`);
+    showToast(`已添加变量：${nextName}`, 'success');
+  };
+
+  const handleUpdateVariable = (originalName: string, variable: BlueprintVariable) => {
+    const nextName = variable.name.trim();
+    if (!nextName) {
+      showToast('变量名称不能为空。', 'error');
+      return;
+    }
+    if (hasVariableName(plan.variables, nextName, originalName)) {
+      showToast(`变量“${nextName}”已存在。`, 'error');
+      return;
+    }
+
+    const nextVariables = plan.variables.map((item) =>
+      item.name === originalName ? { ...variable, name: nextName } : item,
+    );
+    const nextPlan = { ...plan, variables: nextVariables };
+    updateActivePlan(nextPlan, `已更新变量：${nextName}`);
+    showToast(`已更新变量：${nextName}`, 'success');
+  };
+
+  const handleDeleteVariable = (name: string) => {
+    const nextVariables = plan.variables.filter((variable) => variable.name !== name);
+    if (nextVariables.length === plan.variables.length) {
+      showToast(`没有找到变量“${name}”。`, 'error');
+      return;
+    }
+
+    const nextPlan = { ...plan, variables: nextVariables };
+    updateActivePlan(nextPlan, `已删除变量：${name}`);
+    showToast(`已删除变量：${name}`, 'success');
+  };
+
   const handleDeleteProject = () => {
     if (!activeProject) return;
     if (library.projects.length <= 1) {
@@ -491,12 +558,16 @@ export default function App() {
     <div className="app-shell">
       <ProjectSidebar
         library={library}
+        plan={plan}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
         onSelectProject={handleSelectProject}
         onCreateProject={handleCreateProject}
         onDuplicateProject={handleDuplicateProject}
         onDeleteProject={handleDeleteProject}
+        onCreateVariable={handleCreateVariable}
+        onUpdateVariable={handleUpdateVariable}
+        onDeleteVariable={handleDeleteVariable}
       />
 
       <main className="workspace">
