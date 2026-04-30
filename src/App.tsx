@@ -53,12 +53,71 @@ const PRESET_PROMPTS = [
   '基于当前图，改成按一次打开，再按一次关闭',
 ];
 
+type RightPanelTab = 'chat' | 'properties' | 'ai';
+
+const RECENT_CONTEXT_MESSAGE_COUNT = 8;
+const MAX_STORED_CHAT_MESSAGES = 160;
+
+const RIGHT_PANEL_TABS: Array<{ id: RightPanelTab; label: string; hint: string }> = [
+  { id: 'chat', label: '对话', hint: '连续追问与生成' },
+  { id: 'properties', label: '蓝图属性', hint: 'Details / 变量 / 清单' },
+  { id: 'ai', label: 'AI 配置', hint: '接口、导入和提示词' },
+];
+
 function timeString(): string {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
 function createMessage(role: ChatMessage['role'], content: string): ChatMessage {
   return { id: crypto.randomUUID(), role, content, createdAt: timeString() };
+}
+
+function summarizeChatForStorage(messages: ChatMessage[]): string {
+  const older = messages.slice(0, Math.max(0, messages.length - RECENT_CONTEXT_MESSAGE_COUNT));
+  if (older.length === 0) return '';
+
+  return older
+    .slice(-24)
+    .map((message, index) => {
+      const role = message.role === 'user' ? '用户' : '助手';
+      const text = message.content.replace(/\s+/g, ' ').trim();
+      return `${index + 1}. ${role}：${text.length > 120 ? `${text.slice(0, 120)}…` : text}`;
+    })
+    .join('\n');
+}
+
+function compactStoredMessages(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length <= MAX_STORED_CHAT_MESSAGES) return messages;
+  const kept = messages.slice(-MAX_STORED_CHAT_MESSAGES);
+  return [
+    createMessage('assistant', `较早的 ${messages.length - kept.length} 条对话已在本地存储中压缩；继续生成时仍会把最近对话和摘要传给 AI。`),
+    ...kept,
+  ];
+}
+
+function attachChatToProject(project: BlueprintProject, messages: ChatMessage[]): BlueprintProject {
+  const storedMessages = compactStoredMessages(messages);
+  return {
+    ...project,
+    chatMessages: storedMessages,
+    chatContextSummary: summarizeChatForStorage(messages),
+  };
+}
+
+function createDefaultChatMessages(project: BlueprintProject | undefined, plan: BlueprintPlan): ChatMessage[] {
+  const location = project ? `${project.userName} / ${project.folderPath}` : '默认用户 / 示例蓝图';
+  return [
+    createMessage('assistant', `已打开“${plan.meta.title || project?.name || '未命名蓝图'}”。这个蓝图归档在 ${location}。你可以直接追问或要求 AI 基于当前图继续修改。`),
+    createMessage('assistant', plan.assistantReply),
+  ];
+}
+
+function getProjectChatMessages(project: BlueprintProject | undefined, plan: BlueprintPlan): ChatMessage[] {
+  const storedMessages = project?.chatMessages;
+  if (Array.isArray(storedMessages) && storedMessages.length > 0) {
+    return storedMessages;
+  }
+  return createDefaultChatMessages(project, plan);
 }
 
 function downloadJsonFile(plan: BlueprintPlan): void {
@@ -153,19 +212,20 @@ function withPlanTitle(plan: BlueprintPlan, title: string): BlueprintPlan {
 
 export default function App() {
   const { toasts, show: showToast, dismiss: dismissToast } = useToast();
+  const [initialLibrary] = useState<BlueprintLibrary>(() => loadStoredLibrary(DEMO_BLUEPRINT));
+  const initialProject = initialLibrary.projects.find((project) => project.id === initialLibrary.activeProjectId) ?? initialLibrary.projects[0];
+  const initialPlan = normalizeBlueprintPlan(findActivePlan(initialLibrary));
   const [config, setConfig] = useState<AppConfig>(() => loadStoredConfig(DEFAULT_CONFIG));
-  const [library, setLibrary] = useState<BlueprintLibrary>(() => loadStoredLibrary(DEMO_BLUEPRINT));
+  const [library, setLibrary] = useState<BlueprintLibrary>(initialLibrary);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [plan, setPlan] = useState<BlueprintPlan>(() => normalizeBlueprintPlan(findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT))));
-  const [rawJson, setRawJson] = useState<string>(() => JSON.stringify(normalizeBlueprintPlan(findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT))), null, 2));
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(plan.nodes[0]?.id ?? null);
+  const [plan, setPlan] = useState<BlueprintPlan>(initialPlan);
+  const [rawJson, setRawJson] = useState<string>(() => JSON.stringify(initialPlan, null, 2));
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialPlan.nodes[0]?.id ?? null);
   const [activeTab, setActiveTab] = useState<InspectorTab>('notes');
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('chat');
   const [prompt, setPrompt] = useState<string>('做一个按下 E 打开门的 Actor 蓝图');
   const [importText, setImportText] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    createMessage('assistant', '欢迎使用本地优先的 UE5 蓝图 AI 工作台。你可以创建不同用户/文件夹的蓝图，也可以让 AI 返回工作区操作自动新建或更新蓝图。'),
-    createMessage('assistant', findActivePlan(loadStoredLibrary(DEMO_BLUEPRINT)).assistantReply),
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => getProjectChatMessages(initialProject, initialPlan));
   const [busy, setBusy] = useState(false);
   const [statusText, setStatusText] = useState('本地优先 · 支持直连 / 云端中转 / 本地代理');
   const [endpointLabel, setEndpointLabel] = useState('');
@@ -189,8 +249,40 @@ export default function App() {
     [config, prompt],
   );
 
+  const compactedMessageCount = Math.max(0, messages.length - RECENT_CONTEXT_MESSAGE_COUNT);
+
   const handleConfigChange = (patch: Partial<AppConfig>) =>
     setConfig((c) => ({ ...c, ...patch }));
+
+  const persistChatMessages = (projectId: string, nextMessages: ChatMessage[]) => {
+    setLibrary((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === projectId ? attachChatToProject(project, nextMessages) : project,
+      ),
+    }));
+  };
+
+  const replaceChatMessages = (nextMessages: ChatMessage[], projectId = library.activeProjectId) => {
+    setMessages(nextMessages);
+    persistChatMessages(projectId, nextMessages);
+  };
+
+  const appendChatMessages = (items: ChatMessage[], projectId?: string) => {
+    setMessages((current) => {
+      const nextMessages = [...current, ...items];
+      setLibrary((currentLibrary) => {
+        const targetProjectId = projectId ?? currentLibrary.activeProjectId;
+        return {
+          ...currentLibrary,
+          projects: currentLibrary.projects.map((project) =>
+            project.id === targetProjectId ? attachChatToProject(project, nextMessages) : project,
+          ),
+        };
+      });
+      return nextMessages;
+    });
+  };
 
   const savePlanToActiveProject = (nextPlan: BlueprintPlan) => {
     setLibrary((current) => ({
@@ -208,22 +300,22 @@ export default function App() {
     }));
   };
 
-  const setCurrentPlan = (nextPlan: BlueprintPlan, status: string, assistantText?: string) => {
+  const setCurrentPlan = (nextPlan: BlueprintPlan, status: string) => {
     setPlan(nextPlan);
     setRawJson(JSON.stringify(nextPlan, null, 2));
     setSelectedNodeId(nextPlan.nodes[0]?.id ?? null);
     setActiveTab('notes');
     setStatusText(status);
-    if (assistantText) setMessages((cur) => [...cur, createMessage('assistant', assistantText)]);
   };
 
   const applyPlan = (nextPlan: BlueprintPlan, sourceLabel: string, assistantText?: string) => {
     savePlanToActiveProject(nextPlan);
     setEndpointLabel(sourceLabel);
-    setCurrentPlan(nextPlan, `已更新：${nextPlan.meta.title}`, assistantText);
+    setCurrentPlan(nextPlan, `已更新：${nextPlan.meta.title}`);
+    if (assistantText) appendChatMessages([createMessage('assistant', assistantText)]);
   };
 
-  const applyWorkspaceResponse = (response: BlueprintWorkspaceResponse, sourceLabel: string) => {
+  const applyWorkspaceResponse = (response: BlueprintWorkspaceResponse, sourceLabel: string, baseHistory: ChatMessage[] = messages) => {
     if (response.operations.length === 0) {
       showToast('AI 返回中没有可执行的蓝图操作。', 'error');
       return;
@@ -320,19 +412,28 @@ export default function App() {
       return;
     }
 
-    const nextLibrary: BlueprintLibrary = {
-      version: 1,
-      activeProjectId: selectedProject.id,
-      projects: nextProjects,
-    };
     const selectedPlan = normalizeBlueprintPlan(selectedProject.plan);
     const status = descriptions.length > 1
       ? `已执行 ${descriptions.length} 个 AI 蓝图操作`
       : descriptions[0] || `已打开：${selectedProject.name}`;
+    const assistantText = response.assistantReply || selectedPlan.assistantReply;
+    const nextMessages = assistantText
+      ? [...baseHistory, createMessage('assistant', assistantText)]
+      : baseHistory;
+    const projectsWithChat = nextProjects.map((project) =>
+      project.id === selectedProject.id ? attachChatToProject(project, nextMessages) : project,
+    );
+    const nextLibrary: BlueprintLibrary = {
+      version: 1,
+      activeProjectId: selectedProject.id,
+      projects: projectsWithChat,
+    };
 
     setLibrary(nextLibrary);
+    setMessages(nextMessages);
     setEndpointLabel(sourceLabel);
-    setCurrentPlan(selectedPlan, status, response.assistantReply || selectedPlan.assistantReply);
+    setCurrentPlan(selectedPlan, status);
+    setRightPanelTab('chat');
     showToast(status, 'success');
   };
 
@@ -340,13 +441,18 @@ export default function App() {
     const project = library.projects.find((item) => item.id === projectId);
     if (!project) return;
     const normalizedPlan = normalizeBlueprintPlan(project.plan);
-    setLibrary((current) => ({ ...current, activeProjectId: projectId }));
+    const projectMessages = getProjectChatMessages(project, normalizedPlan);
+    setLibrary((current) => ({
+      ...current,
+      activeProjectId: projectId,
+      projects: current.projects.map((item) =>
+        item.id === projectId ? attachChatToProject(item, projectMessages) : item,
+      ),
+    }));
     setEndpointLabel('本地存储');
     setCurrentPlan(normalizedPlan, `已打开：${project.name}`);
-    setMessages([
-      createMessage('assistant', `已打开“${project.name}”。这个蓝图归档在 ${project.userName} / ${project.folderPath}。`),
-      createMessage('assistant', normalizedPlan.assistantReply),
-    ]);
+    setMessages(projectMessages);
+    setRightPanelTab('chat');
   };
 
   const handleCreateProject = () => {
@@ -367,14 +473,18 @@ export default function App() {
       assistantReply: '已创建新的本地蓝图。你可以在输入框描述需求后生成，也可以导入已有 JSON。',
     });
     const project = createBlueprintProject(nextPlan, { name, userName, folderPath });
+    const projectMessages = createDefaultChatMessages(project, nextPlan);
+    const projectWithChat = attachChatToProject(project, projectMessages);
 
     setLibrary((current) => ({
       ...current,
-      activeProjectId: project.id,
-      projects: [...current.projects, project],
+      activeProjectId: projectWithChat.id,
+      projects: [...current.projects, projectWithChat],
     }));
+    setMessages(projectMessages);
     setEndpointLabel('本地新建');
-    setCurrentPlan(nextPlan, `已新建：${name}`, nextPlan.assistantReply);
+    setCurrentPlan(nextPlan, `已新建：${name}`);
+    setRightPanelTab('chat');
   };
 
   const handleDuplicateProject = () => {
@@ -389,21 +499,29 @@ export default function App() {
       userName: activeProject.userName,
       folderPath: activeProject.folderPath,
     });
+    const projectMessages = [
+      createMessage('assistant', `已把当前蓝图复制为“${name}”。你可以在这个副本上继续追问或生成。`),
+      createMessage('assistant', nextPlan.assistantReply),
+    ];
+    const projectWithChat = attachChatToProject(project, projectMessages);
 
     setLibrary((current) => ({
       ...current,
-      activeProjectId: project.id,
-      projects: [...current.projects, project],
+      activeProjectId: projectWithChat.id,
+      projects: [...current.projects, projectWithChat],
     }));
+    setMessages(projectMessages);
     setEndpointLabel('本地复制');
-    setCurrentPlan(nextPlan, `已复制：${name}`, '已把当前蓝图复制成新的本地文件。');
+    setCurrentPlan(nextPlan, `已复制：${name}`);
+    setRightPanelTab('chat');
   };
 
   const updateActivePlan = (nextPlan: BlueprintPlan, status: string, assistantText?: string) => {
     const normalizedPlan = normalizeBlueprintPlan(nextPlan);
     savePlanToActiveProject(normalizedPlan);
     setEndpointLabel('本地变量');
-    setCurrentPlan(normalizedPlan, status, assistantText);
+    setCurrentPlan(normalizedPlan, status);
+    if (assistantText) appendChatMessages([createMessage('assistant', assistantText)]);
   };
 
   const hasVariableName = (variables: BlueprintVariable[], name: string, exceptName = '') => {
@@ -465,6 +583,36 @@ export default function App() {
     showToast(`已删除变量：${name}`, 'success');
   };
 
+  const handleUpdatePropertyValue = (propertyId: string, value: string) => {
+    const property = plan.properties.find((item) => item.id === propertyId);
+    if (!property) return;
+
+    const normalizedPlan = normalizeBlueprintPlan({
+      ...plan,
+      properties: plan.properties.map((item) =>
+        item.id === propertyId ? { ...item, value, source: 'user_override' } : item,
+      ),
+    });
+
+    setLibrary((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === current.activeProjectId
+          ? {
+              ...project,
+              name: normalizedPlan.meta.title?.trim() || project.name,
+              updatedAt: new Date().toISOString(),
+              plan: normalizedPlan,
+            }
+          : project,
+      ),
+    }));
+    setPlan(normalizedPlan);
+    setRawJson(JSON.stringify(normalizedPlan, null, 2));
+    setEndpointLabel('本地属性');
+    setStatusText(`已更新属性：${property.owner}.${property.name}`);
+  };
+
   const handleDeleteProject = () => {
     if (!activeProject) return;
     if (library.projects.length <= 1) {
@@ -476,21 +624,44 @@ export default function App() {
     const remaining = library.projects.filter((project) => project.id !== activeProject.id);
     const nextActive = remaining[0];
     const nextPlan = normalizeBlueprintPlan(nextActive.plan);
+    const nextMessages = [
+      ...getProjectChatMessages(nextActive, nextPlan),
+      createMessage('assistant', `已删除“${activeProject.name}”，并打开“${nextActive.name}”。`),
+    ];
+    const projectsWithChat = remaining.map((project) =>
+      project.id === nextActive.id ? attachChatToProject(project, nextMessages) : project,
+    );
 
-    setLibrary({ version: 1, activeProjectId: nextActive.id, projects: remaining });
+    setLibrary({ version: 1, activeProjectId: nextActive.id, projects: projectsWithChat });
+    setMessages(nextMessages);
     setEndpointLabel('本地存储');
-    setCurrentPlan(nextPlan, `已删除，当前打开：${nextActive.name}`, `已删除“${activeProject.name}”，并打开“${nextActive.name}”。`);
+    setCurrentPlan(nextPlan, `已删除，当前打开：${nextActive.name}`);
+    setRightPanelTab('chat');
   };
 
   const handleLoadDemo = () => {
     const demoPlan = normalizeBlueprintPlan(DEMO_BLUEPRINT);
-    savePlanToActiveProject(demoPlan);
-    setEndpointLabel('示例');
-    setMessages([
+    const demoMessages = [
       createMessage('assistant', '已重置到本地示例图。你可以直接覆盖需求，也可以勾选“基于当前蓝图继续修改”让模型沿着当前图继续迭代。'),
       createMessage('assistant', DEMO_BLUEPRINT.assistantReply),
-    ]);
+    ];
+    setLibrary((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === current.activeProjectId
+          ? attachChatToProject({
+              ...project,
+              name: demoPlan.meta.title?.trim() || project.name,
+              updatedAt: new Date().toISOString(),
+              plan: demoPlan,
+            }, demoMessages)
+          : project,
+      ),
+    }));
+    setMessages(demoMessages);
+    setEndpointLabel('示例');
     setCurrentPlan(demoPlan, '已载入本地示例图');
+    setRightPanelTab('chat');
   };
 
   const handleExport = () => { downloadJsonFile(plan); setStatusText('已导出当前蓝图 JSON'); };
@@ -518,7 +689,7 @@ export default function App() {
     try {
       const parsed = JSON.parse(extractJsonString(importText));
       const workspaceResponse = normalizeBlueprintWorkspaceResponse(parsed);
-      applyWorkspaceResponse(workspaceResponse, '导入工作区 JSON');
+      applyWorkspaceResponse(workspaceResponse, '导入工作区 JSON', messages);
     } catch (reason) {
       showToast(`导入 JSON 失败：${reason instanceof Error ? reason.message : '未知错误'}`, 'error');
       setStatusText('导入失败');
@@ -526,7 +697,8 @@ export default function App() {
   };
 
   const handleClearChat = () => {
-    setMessages([createMessage('assistant', '会话已清空。你可以重新描述需求，也可以保留当前蓝图继续修改。')]);
+    const nextMessages = [createMessage('assistant', '会话已清空。你可以重新描述需求，也可以保留当前蓝图继续修改。')];
+    replaceChatMessages(nextMessages);
     setStatusText('会话已清空');
   };
 
@@ -537,18 +709,18 @@ export default function App() {
 
     const userMessage = createMessage('user', userPrompt);
     const history = [...messages, userMessage];
-    setMessages(history);
+    replaceChatMessages(history);
     setBusy(true);
     setStatusText('正在调用模型生成蓝图工作区操作...');
 
     try {
       const result = await generateBlueprintPlan({ config, userPrompt, currentPlan: plan, history, library });
-      applyWorkspaceResponse(result.response, result.endpointLabel);
+      applyWorkspaceResponse(result.response, result.endpointLabel, history);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : '生成失败';
       showToast(message, 'error');
       setStatusText('生成失败');
-      setMessages((cur) => [...cur, createMessage('assistant', `这次生成失败了：${message}`)]);
+      appendChatMessages([createMessage('assistant', `这次生成失败了：${message}`)]);
     } finally {
       setBusy(false);
     }
@@ -589,40 +761,67 @@ export default function App() {
         </section>
 
         <aside className="right-pane">
-          <div className="right-pane__scroll">
-            <SettingsPanel config={config} onChange={handleConfigChange} />
-            <ImportPanel
-              importText={importText}
-              externalPrompt={externalPrompt}
-              onImportTextChange={setImportText}
-              onApplyImport={handleApplyImport}
-              onClearImport={() => setImportText('')}
-              onCopyPrompt={handleCopyExternalPrompt}
-            />
-            <InspectorTabs
-              plan={plan}
-              selectedNode={selectedNode}
-              activeTab={activeTab}
-              rawJson={rawJson}
-              onChangeTab={setActiveTab}
-              onFocusNode={(nodeId) => { setSelectedNodeId(nodeId); setActiveTab('notes'); }}
-            />
+          <div className="right-pane__tabbar" role="tablist" aria-label="右侧面板">
+            {RIGHT_PANEL_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`right-pane__tab ${rightPanelTab === tab.id ? 'is-active' : ''}`}
+                onClick={() => setRightPanelTab(tab.id)}
+                role="tab"
+                aria-selected={rightPanelTab === tab.id}
+              >
+                <strong>{tab.label}</strong>
+                <span>{tab.hint}</span>
+              </button>
+            ))}
           </div>
 
-          <div className="right-pane__chat">
-            <ChatPanel
-              messages={messages}
-              prompt={prompt}
-              presets={PRESET_PROMPTS}
-              busy={busy}
-              editExistingGraph={config.editExistingGraph}
-              onPromptChange={setPrompt}
-              onUsePreset={setPrompt}
-              onEditExistingGraphChange={(v) => handleConfigChange({ editExistingGraph: v })}
-              onSend={handleSend}
-              onClear={handleClearChat}
-            />
-          </div>
+          {rightPanelTab === 'chat' ? (
+            <div className="right-pane__page right-pane__page--chat">
+              <ChatPanel
+                messages={messages}
+                prompt={prompt}
+                presets={PRESET_PROMPTS}
+                busy={busy}
+                editExistingGraph={config.editExistingGraph}
+                compactedMessageCount={compactedMessageCount}
+                onPromptChange={setPrompt}
+                onUsePreset={setPrompt}
+                onEditExistingGraphChange={(v) => handleConfigChange({ editExistingGraph: v })}
+                onSend={handleSend}
+                onClear={handleClearChat}
+              />
+            </div>
+          ) : null}
+
+          {rightPanelTab === 'properties' ? (
+            <div className="right-pane__page right-pane__scroll">
+              <InspectorTabs
+                plan={plan}
+                selectedNode={selectedNode}
+                activeTab={activeTab}
+                rawJson={rawJson}
+                onChangeTab={setActiveTab}
+                onFocusNode={(nodeId) => { setSelectedNodeId(nodeId); setActiveTab('notes'); }}
+                onUpdatePropertyValue={handleUpdatePropertyValue}
+              />
+            </div>
+          ) : null}
+
+          {rightPanelTab === 'ai' ? (
+            <div className="right-pane__page right-pane__scroll">
+              <SettingsPanel config={config} onChange={handleConfigChange} />
+              <ImportPanel
+                importText={importText}
+                externalPrompt={externalPrompt}
+                onImportTextChange={setImportText}
+                onApplyImport={handleApplyImport}
+                onClearImport={() => setImportText('')}
+                onCopyPrompt={handleCopyExternalPrompt}
+              />
+            </div>
+          ) : null}
         </aside>
       </main>
 

@@ -9,6 +9,9 @@ interface BuildPromptArgs {
   library: BlueprintLibrary;
 }
 
+const RECENT_HISTORY_COUNT = 8;
+const OLDER_HISTORY_SUMMARY_COUNT = 18;
+
 function truncateText(value: string, limit: number): string {
   const text = value.replace(/\s+/g, ' ').trim();
   if (text.length <= limit) {
@@ -17,19 +20,37 @@ function truncateText(value: string, limit: number): string {
   return `${text.slice(0, limit)}…`;
 }
 
+function formatConversationLine(message: ChatMessage, index: number, limit: number): string {
+  const prefix = message.role === 'user' ? '用户' : '助手';
+  return `${index + 1}. ${prefix}：${truncateText(message.content, limit)}`;
+}
+
 function formatHistory(history: ChatMessage[]): string {
-  const recent = history.slice(-4);
-  if (recent.length === 0) {
+  if (history.length === 0) {
     return '无';
   }
 
-  return recent
-    .map((message, index) => {
-      const prefix = message.role === 'user' ? '用户' : '助手';
-      const limit = message.role === 'user' ? 220 : 120;
-      return `${index + 1}. ${prefix}：${truncateText(message.content, limit)}`;
-    })
-    .join('\n');
+  const older = history.slice(0, Math.max(0, history.length - RECENT_HISTORY_COUNT));
+  const recent = history.slice(-RECENT_HISTORY_COUNT);
+  const sections: string[] = [];
+
+  if (older.length > 0) {
+    const summaryLines = older
+      .slice(-OLDER_HISTORY_SUMMARY_COUNT)
+      .map((message, index) => formatConversationLine(message, index, message.role === 'user' ? 160 : 110));
+
+    sections.push([
+      `较早对话压缩摘要（共 ${older.length} 条，只用于延续上下文，不要覆盖用户当前需求）：`,
+      ...summaryLines,
+    ].join('\n'));
+  }
+
+  sections.push([
+    `最近完整对话（${recent.length} 条，优先级高于压缩摘要）：`,
+    ...recent.map((message, index) => formatConversationLine(message, index, message.role === 'user' ? 260 : 180)),
+  ].join('\n'));
+
+  return sections.join('\n\n');
 }
 
 function compactCurrentPlan(plan: BlueprintPlan): string {
@@ -39,6 +60,7 @@ function compactCurrentPlan(plan: BlueprintPlan): string {
       nodes: plan.nodes,
       links: plan.links,
       variables: plan.variables,
+      properties: plan.properties,
       messages: plan.messages,
       searchTips: plan.searchTips,
       checklist: plan.checklist,
@@ -60,6 +82,8 @@ function compactLibrary(library: BlueprintLibrary): string {
         updatedAt: project.updatedAt,
         blueprintTitle: project.plan.meta.title,
         blueprintType: project.plan.meta.blueprintType,
+        variableCount: project.plan.variables?.length ?? 0,
+        propertyOverrideCount: project.plan.properties?.length ?? 0,
       })),
     },
     null,
@@ -75,15 +99,19 @@ export function buildGenerationPrompt({
   library,
 }: BuildPromptArgs): string {
   const activeProject = library.projects.find((project) => project.id === library.activeProjectId) ?? library.projects[0];
+  const activeProjectLabel = activeProject
+    ? `${activeProject.userName} / ${activeProject.folderPath} / ${activeProject.name}（id=${activeProject.id}）`
+    : '无';
   const sections = [
     '请为 UE5 蓝图可视化工作台生成可执行的工作区 JSON 指令。',
     `用户当前需求：${userPrompt}`,
     `蓝图类型：${config.blueprintType}`,
     `UE 版本：${config.ueVersion}`,
     `场景上下文：${config.sceneContext || '未提供额外上下文'}`,
-    `当前打开蓝图：${activeProject ? `${activeProject.userName} / ${activeProject.folderPath} / ${activeProject.name}（id=${activeProject.id}）` : '无'}`,
+    `当前打开蓝图：${activeProjectLabel}`,
     `本地蓝图库摘要：\n${compactLibrary(library)}`,
-    `最近对话摘要：\n${formatHistory(history)}`,
+    `本地长期会话摘要:\n${activeProject?.chatContextSummary?.trim() || '无'}`,
+    `连续对话上下文：\n${formatHistory(history)}`,
     [
       '工作区操作规则：',
       '1. 根对象必须是 BlueprintWorkspaceResponse，responseType 固定为 blueprint_workspace_operation。',
@@ -99,7 +127,9 @@ export function buildGenerationPrompt({
       '3. assistantReply 只写 2 到 4 句总结，不逐节点讲解。',
       '4. node.comment 默认留空，仅在节点难找、需要从组件/Pin 拖线、需要 Promote to Variable/Add Timeline/Add Custom Event 时填写短注释。',
       '5. messages / searchTips 只保留关键新手提醒，不要重复。',
-      '6. checklist 写成可执行步骤；variables 只保留必要变量，不要堆候选。',
+      '6. checklist 写成可执行步骤；variables 只保留需要用户创建的蓝图变量。',
+      '7. UE 蓝图自带属性或组件默认属性调整必须放入 properties，owner 写 Self 或组件名，例如 Actor Tick、Replicates、Auto Receive Input、Collision Presets、Mobility、Generate Overlap Events、Hidden in Game、Can Ever Affect Navigation。',
+      '8. 不要把蓝图自带属性误写进 variables；variables 是左侧“用户变量”，properties 是右侧“蓝图属性”，owner 写 Self 或组件名。',
     ].join('\n'),
   ];
 
@@ -137,8 +167,9 @@ export function buildExternalPromptTemplate(config: AppConfig, demand: string): 
     '7. assistantReply 只写 2 到 4 句简短总结。',
     '8. 不要逐节点解释；node.comment 默认空字符串，只在关键节点写短注释。',
     '9. 如果节点不能直接右键搜到，要写清需要从组件或 Pin 拖线，或先 Add Timeline / Add Custom Event / Promote to Variable。',
-    '10. variables 只列必要变量，并注明 instanceEditable、exposeOnSpawn、promoteFromNode、reason。',
-    '11. 输出必须是合法 JSON，不得出现多余逗号、注释、Markdown 或非法空值。',
+    '10. variables 只列需要用户创建的蓝图变量，并注明 instanceEditable、exposeOnSpawn、promoteFromNode、reason。',
+    '11. UE 蓝图自带属性、组件默认值和 Details 面板勾选项必须写到 properties，owner 写 Self 或组件名，例如 Tick、Replication、Collision、Input、Rendering、Component Defaults，不要混进 variables。',
+    '12. 输出必须是合法 JSON，不得出现多余逗号、注释、Markdown 或非法空值。',
     '',
     `需求：${demand || '[在这里填写你的蓝图需求，例如：在 默认用户/投掷物 文件夹中新建 BP_GasGrenade 毒气弹蓝图]'}`,
   ].join('\n');

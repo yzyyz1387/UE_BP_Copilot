@@ -8,6 +8,8 @@ import type {
   BlueprintNodeKind,
   BlueprintNodeModel,
   BlueprintPlan,
+  BlueprintProperty,
+  BlueprintPropertySource,
   BlueprintVariable,
   Pin,
   SearchTip,
@@ -23,6 +25,12 @@ const ALLOWED_NODE_TYPES = new Set<BlueprintNodeKind>([
 ]);
 
 const ALLOWED_LEVELS = new Set<AdviceLevel>(['note', 'warning', 'tip']);
+const ALLOWED_PROPERTY_SOURCES = new Set<BlueprintPropertySource>([
+  'engine_default',
+  'component_default',
+  'user_override',
+  'ai_override',
+]);
 
 function stringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
@@ -119,6 +127,34 @@ function sanitizeVariables(value: unknown): BlueprintVariable[] {
       exposeOnSpawn: booleanValue(variable.exposeOnSpawn),
       promoteFromNode: stringValue(variable.promoteFromNode),
       reason: stringValue(variable.reason),
+    };
+  });
+}
+
+
+function sanitizeProperties(value: unknown): BlueprintProperty[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item, index) => {
+    const property = (item ?? {}) as Partial<BlueprintProperty>;
+    const source = ALLOWED_PROPERTY_SOURCES.has(property.source as BlueprintPropertySource)
+      ? (property.source as BlueprintPropertySource)
+      : 'ai_override';
+    const category = stringValue(property.category, 'Blueprint Defaults');
+    const ownerFromCategory = category.includes('/') ? category.split('/')[0]?.trim() : '';
+
+    return {
+      id: stringValue(property.id, `property_${index + 1}`),
+      owner: stringValue(property.owner, ownerFromCategory || 'Self'),
+      category,
+      name: stringValue(property.name, `Property_${index + 1}`),
+      type: stringValue(property.type, 'Any'),
+      value: stringValue(property.value),
+      defaultValue: stringValue(property.defaultValue),
+      source,
+      reason: stringValue(property.reason),
     };
   });
 }
@@ -242,6 +278,7 @@ export function normalizeBlueprintPlan(value: unknown): BlueprintPlan {
     nodes,
     links: sanitizeLinks(raw.links, nodes),
     variables: sanitizeVariables(raw.variables),
+    properties: sanitizeProperties((raw as Partial<BlueprintPlan> & { blueprintProperties?: unknown }).properties ?? (raw as { blueprintProperties?: unknown }).blueprintProperties),
     messages: sanitizeMessages(raw.messages, nodeIds),
     searchTips: sanitizeSearchTips(raw.searchTips),
     checklist: uniqueStrings(raw.checklist, 16),

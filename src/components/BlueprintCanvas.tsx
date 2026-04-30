@@ -6,7 +6,9 @@ import {
   ReactFlow,
   useEdgesState,
   useNodesState,
+  type Node,
   type NodeChange,
+  type NodeTypes,
 } from '@xyflow/react';
 import {
   toFlowEdges,
@@ -19,9 +21,11 @@ import { loadStoredPositions, storePositions } from '../lib/localStorage';
 import type { BlueprintFlowNodeData, BlueprintPlan } from '../types';
 import BlueprintNode from './BlueprintNode';
 
+type BlueprintReactFlowNode = Node<BlueprintFlowNodeData>;
+
 const nodeTypes = {
   blueprintNode: BlueprintNode,
-};
+} as NodeTypes;
 
 interface BlueprintCanvasProps {
   plan: BlueprintPlan;
@@ -30,7 +34,7 @@ interface BlueprintCanvasProps {
   onSelectNode: (nodeId: string | null) => void;
 }
 
-function buildNodes(plan: BlueprintPlan, selectedNodeId: string | null, storageScope?: string) {
+function buildNodes(plan: BlueprintPlan, selectedNodeId: string | null, storageScope?: string): BlueprintReactFlowNode[] {
   const baseNodes = toFlowNodes(plan, selectedNodeId);
   const edges = toFlowEdges(plan);
   const storedPositions = loadStoredPositions(storageScope);
@@ -63,7 +67,7 @@ export function BlueprintCanvas({
   );
   const initialEdges = useMemo(() => toFlowEdges(plan), []);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintReactFlowNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
   useEffect(() => {
@@ -84,7 +88,7 @@ export function BlueprintCanvas({
   }, [selectedNodeId, setNodes]);
 
   const handleNodesChange = useCallback(
-    (changes: NodeChange[]) => {
+    (changes: NodeChange<BlueprintReactFlowNode>[]) => {
       if (canvasLocked) return;
       onNodesChange(changes);
 
@@ -119,7 +123,8 @@ export function BlueprintCanvas({
           <span>{plan.meta.blueprintType}</span>
           <span>{plan.nodes.length} 节点</span>
           <span>{plan.links.length} 连线</span>
-          <span>{plan.variables.length} 变量</span>
+          <span>{plan.variables.length} 用户变量</span>
+          <span>{plan.properties.length} 属性</span>
         </div>
       </div>
 
@@ -160,7 +165,7 @@ export function BlueprintCanvas({
           zoomable={!canvasLocked}
           pannable={!canvasLocked}
           nodeColor={(node) => {
-            const data = node.data as BlueprintFlowNodeData;
+            const data = node.data as unknown as BlueprintFlowNodeData;
             return getNodeColorByAccent(getNodeAccent(data.nodeType, data.category));
           }}
         />

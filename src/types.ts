@@ -53,6 +53,25 @@ export interface BlueprintVariable {
   reason: string;
 }
 
+export type BlueprintPropertySource =
+  | 'engine_default'
+  | 'component_default'
+  | 'user_override'
+  | 'ai_override';
+
+export interface BlueprintProperty {
+  id: string;
+  /** 属性归属对象，Self 表示蓝图自身；组件属性写组件名，例如 ProjectileMovement / SphereCollision。 */
+  owner: string;
+  category: string;
+  name: string;
+  type: string;
+  value: string;
+  defaultValue: string;
+  source: BlueprintPropertySource;
+  reason: string;
+}
+
 export interface AdviceMessage {
   id: string;
   level: AdviceLevel;
@@ -83,12 +102,15 @@ export interface BlueprintPlan {
   nodes: BlueprintNodeModel[];
   links: BlueprintLink[];
   variables: BlueprintVariable[];
+  /** UE 蓝图 / 组件自带属性的默认值或覆盖值，区别于需要用户创建的 variables。 */
+  properties: BlueprintProperty[];
   messages: AdviceMessage[];
   searchTips: SearchTip[];
   checklist: string[];
 }
 
 export interface BlueprintFlowNodeData {
+  [key: string]: unknown;
   title: string;
   subtitle: string;
   category: string;
@@ -163,6 +185,8 @@ export interface BlueprintProject {
   createdAt: string;
   updatedAt: string;
   plan: BlueprintPlan;
+  chatMessages?: ChatMessage[];
+  chatContextSummary?: string;
 }
 
 export interface BlueprintLibrary {

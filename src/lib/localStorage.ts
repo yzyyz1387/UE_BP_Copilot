@@ -1,4 +1,4 @@
-import type { AppConfig, BlueprintLibrary, BlueprintPlan, BlueprintProject } from '../types';
+import type { AppConfig, BlueprintLibrary, BlueprintPlan, BlueprintProject, ChatMessage } from '../types';
 
 const STORAGE_KEY = 'ue-blueprint-ai-studio:config';
 const PLAN_KEY = 'ue-blueprint-ai-studio:plan';
@@ -33,6 +33,33 @@ export function createBlueprintProject(
     createdAt: timestamp,
     updatedAt: timestamp,
     plan,
+    chatMessages: [],
+    chatContextSummary: '',
+  };
+}
+
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  const message = value as Partial<ChatMessage> | null;
+  return Boolean(
+    message &&
+      typeof message.id === 'string' &&
+      (message.role === 'user' || message.role === 'assistant') &&
+      typeof message.content === 'string' &&
+      typeof message.createdAt === 'string'
+  );
+}
+
+function normalizeStoredProject(project: BlueprintProject): BlueprintProject {
+  const chatMessages = Array.isArray(project.chatMessages)
+    ? project.chatMessages.filter(isChatMessage).slice(-160)
+    : [];
+
+  return {
+    ...project,
+    chatMessages,
+    chatContextSummary:
+      typeof project.chatContextSummary === 'string' ? project.chatContextSummary : '',
   };
 }
 
@@ -122,7 +149,7 @@ export function loadStoredLibrary(defaultPlan: BlueprintPlan): BlueprintLibrary 
     const raw = window.localStorage.getItem(LIBRARY_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<BlueprintLibrary>;
-      const projects = Array.isArray(parsed.projects) ? parsed.projects.filter(isBlueprintProject) : [];
+      const projects = Array.isArray(parsed.projects) ? parsed.projects.filter(isBlueprintProject).map(normalizeStoredProject) : [];
       if (projects.length > 0) {
         const activeProjectId =
           typeof parsed.activeProjectId === 'string' && projects.some((item) => item.id === parsed.activeProjectId)

@@ -1,4 +1,4 @@
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { BlueprintFlowNodeData, Pin } from '../types';
 import { getNodeAccent, getPinColor } from '../lib/blueprintTransform';
 
@@ -89,7 +89,9 @@ function CompactNode({
   );
 }
 
-export default function BlueprintNode({ data, selected }: NodeProps<BlueprintFlowNodeData>) {
+type BlueprintReactFlowNode = Node<BlueprintFlowNodeData>;
+
+export default function BlueprintNode({ data, selected }: NodeProps<BlueprintReactFlowNode>) {
   const accent = getNodeAccent(data.nodeType, data.category);
   const isSelected = selected || data.selected;
 

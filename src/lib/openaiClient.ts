@@ -219,7 +219,8 @@ function buildCompatPrompt(prompt: string): string {
     '4. 如果要覆盖当前蓝图，返回 action=replace_current_blueprint；如果要新增到用户/文件夹，返回 action=create_blueprint。',
     '5. 每个 operation.plan 都必须是完整 BlueprintPlan，assistantReply 要简短，不要逐节点解释。',
     '6. node.comment 默认空字符串，只有关键节点才填写短注释。',
-    '7. 字段结构必须满足：',
+    '7. variables 只放需要用户创建的变量；UE 自带属性或组件默认值调整必须放入 properties，owner 写 Self 或组件名。',
+    '8. 字段结构必须满足：',
     OUTPUT_SHAPE_GUIDE,
   ].join('\n');
 }

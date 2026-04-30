@@ -144,6 +144,38 @@ export const UE_BLUEPRINT_PLAN_SCHEMA = {
         ],
       },
     },
+    properties: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string' },
+          owner: { type: 'string' },
+          category: { type: 'string' },
+          name: { type: 'string' },
+          type: { type: 'string' },
+          value: { type: 'string' },
+          defaultValue: { type: 'string' },
+          source: {
+            type: 'string',
+            enum: ['engine_default', 'component_default', 'user_override', 'ai_override'],
+          },
+          reason: { type: 'string' },
+        },
+        required: [
+          'id',
+          'owner',
+          'category',
+          'name',
+          'type',
+          'value',
+          'defaultValue',
+          'source',
+          'reason',
+        ],
+      },
+    },
     messages: {
       type: 'array',
       items: {
@@ -187,6 +219,7 @@ export const UE_BLUEPRINT_PLAN_SCHEMA = {
     'nodes',
     'links',
     'variables',
+    'properties',
     'messages',
     'searchTips',
     'checklist',
@@ -235,12 +268,13 @@ export const UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA = {
 } as const;
 
 export const BLUEPRINT_PLAN_GUIDE = [
-  'BlueprintPlan 必须包含：meta, assistantReply, nodes, links, variables, messages, searchTips, checklist。',
+  'BlueprintPlan 必须包含：meta, assistantReply, nodes, links, variables, properties, messages, searchTips, checklist。',
   'nodes[*] 必须包含：id, title, subtitle, category, nodeType, position{x,y}, inputs, outputs, comment, keywords。',
   'nodeType 只能用 event/function/macro/variable/comment/custom；category 请使用 UE5 常见分类，如 Event、Input、Flow Control、Variable、Timeline、Math、Cast、Component。',
   'pins[*].dataType 请使用 UE5 常见类型名：Exec、Boolean、Integer、Float、String、Name、Text、Vector、Rotator、Transform、Actor、Object、Component、Widget、Class、Enum、Struct。',
   'links[*] 必须包含：id, fromNodeId, fromPinId, toNodeId, toPinId, kind, label。',
-  'variables[*] 必须包含：name, type, defaultValue, instanceEditable, exposeOnSpawn, promoteFromNode, reason。',
+  'variables[*] 必须包含：name, type, defaultValue, instanceEditable, exposeOnSpawn, promoteFromNode, reason；只放需要用户新建的蓝图变量。',
+  'properties[*] 必须包含：id, owner, category, name, type, value, defaultValue, source, reason；只放 UE 蓝图/组件自带属性或默认值调整。',
   'messages[*] 必须包含：id, level(note|warning|tip), title, content, relatedNodeIds。',
   'searchTips[*] 必须包含：id, target, problem, solution。',
 ].join('\n');
@@ -275,11 +309,12 @@ export const SYSTEM_PROMPT = `
 8. assistantReply 控制在 2 到 4 句，只总结整体逻辑、变量和关键提醒。
 9. 不要逐节点讲解。node.comment 默认留空，只有容易找不到、需要从 Pin/组件拖线、需要 Promote to Variable/Add Timeline/Add Custom Event、或有前提条件时才写短注释。
 10. messages 与 searchTips 只保留少量高价值内容，重点说明 Context Sensitive、组件拖线、Pin 拖线、Add Timeline、Add Custom Event、Promote to Variable 等新手易错点。
-11. variables 只列必要变量，并明确 instanceEditable、exposeOnSpawn、promoteFromNode、reason。
+11. variables 只列需要用户创建的变量；蓝图/组件自带属性、默认值调整、勾选项变化必须写入 properties，不要混入 variables。
 12. 如果用户要基于当前图修改且没有要求新建，请用 replace_current_blueprint；如果用户明确要求新建/另存/放到目录，请用 create_blueprint。
 13. 如果不确定某节点是否能直接在特定上下文使用，请给出更稳妥的方案，并在 messages 中说明前提。
 14. 每个节点都必须带 inputs / outputs / keywords，即使为空数组也必须输出。
-15. tokens 要节省：避免重复同义说明、避免长段落、避免教程式长文。
+15. properties 用于描述 UE Details 面板里已有的属性调整，owner 写 Self 或组件名，例如 Actor Tick、Replication、Collision、Mobility、Input、Rendering、Component Defaults。
+16. tokens 要节省：避免重复同义说明、避免长段落、避免教程式长文。
 
 工作区指令格式：
 ${WORKSPACE_OPERATION_GUIDE}
@@ -290,4 +325,6 @@ ${WORKSPACE_OPERATION_GUIDE}
 - operations：前端要执行的一组操作。
 - target：目标用户、文件夹、蓝图名；文件夹不存在时前端会自动归类显示。
 - plan：完整蓝图数据。
+- variables：需要用户在左侧新建/维护的蓝图变量。
+- properties：UE Details 面板里已有属性或组件默认值的调整，owner 写 Self 或组件名，显示在右侧蓝图属性页。
 `.trim();

@@ -121,7 +121,7 @@ function createVariableFromForm(form: VariableFormState): BlueprintVariable {
     instanceEditable: form.instanceEditable,
     exposeOnSpawn: form.exposeOnSpawn,
     promoteFromNode: '',
-    reason: form.reason.trim() || '用户在左侧变量面板手动添加。',
+    reason: form.reason.trim() || '用户在左侧用户变量面板手动添加。',
   };
 }
 
@@ -329,14 +329,14 @@ export function ProjectSidebar({
                 <button type="button" className="project-tree__row project-tree__row--user variable-section-title">
                   <span className="project-tree__chevron">▾</span>
                   <span className="project-tree__icon">▦</span>
-                  <span className="project-tree__label">变量</span>
+                  <span className="project-tree__label">用户变量</span>
                   <span className="project-tree__count">{variables.length}</span>
                 </button>
                 <button
                   type="button"
                   className="variable-add-button"
                   onClick={beginCreateVariable}
-                  title="新增变量"
+                  title="新增用户变量"
                 >
                   ＋
                 </button>
@@ -373,7 +373,7 @@ export function ProjectSidebar({
                     </div>
                   ))
                 ) : (
-                  <p className="variable-tree__empty">暂无变量。点击 ＋ 添加，或让 AI 在 plan.variables 中生成。</p>
+                  <p className="variable-tree__empty">暂无用户变量。蓝图自带属性会显示在右侧“蓝图属性”页。</p>
                 )}
               </div>
 
@@ -463,7 +463,7 @@ export function ProjectSidebar({
             type="button"
             className="nav-icon-button"
             onClick={() => { onToggleCollapsed(); beginCreateVariable(); }}
-            title="新增变量"
+            title="新增用户变量"
           >
             V
           </button>
