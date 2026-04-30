@@ -8,6 +8,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ];
+const MIN_TIMEOUT_MS = 5_000;
+const MAX_TIMEOUT_MS = 180_000;
 
 function getAllowedOrigins() {
   const extra = String(process.env.ALLOWED_ORIGINS || '')
@@ -25,6 +27,8 @@ function setCors(req, res) {
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-UE-BP-Proxy', 'local');
 }
 
 function sendJson(res, status, payload) {
@@ -102,12 +106,40 @@ function buildTargetUrl(baseUrl, path) {
     throw new Error('模型接口地址请填写 /v1 根地址，不要包含查询参数或 #hash。');
   }
 
-  return `${normalizedBaseUrl}/${path}`;
+  return {
+    url: `${normalizedBaseUrl}/${path}`,
+    host: url.hostname,
+  };
+}
+
+function clampTimeoutMs(value) {
+  const candidate = Number(value);
+  if (!Number.isFinite(candidate)) return 60_000;
+  return Math.min(Math.max(candidate, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
+}
+
+function parseProviderTimeout(text) {
+  if (!text || !text.trim().startsWith('{')) return null;
+  try {
+    const payload = JSON.parse(text);
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      payload.code !== undefined &&
+      typeof payload.message === 'string' &&
+      /timeout|timed out|SocketTimeoutException/i.test(`${payload.message} ${payload.data || ''}`)
+    ) {
+      return `${payload.message}${payload.data ? `（${payload.data}）` : ''}`;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 async function handleProxy(req, res) {
   const payload = await readBody(req);
-  const { baseUrl, apiKey, path, body } = payload || {};
+  const { baseUrl, apiKey, path, body, timeoutMs } = payload || {};
 
   if (!apiKey || typeof apiKey !== 'string') {
     sendJson(res, 400, { error: { message: '缺少 API Key。' } });
@@ -119,17 +151,62 @@ async function handleProxy(req, res) {
     return;
   }
 
-  const targetUrl = buildTargetUrl(baseUrl, path);
-  const upstream = await fetch(targetUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  const target = buildTargetUrl(baseUrl, path);
+  const timeout = clampTimeoutMs(timeoutMs);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  let upstream;
+  try {
+    upstream = await fetch(target.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      sendJson(res, 504, {
+        error: {
+          message: `本地代理等待上游模型服务超过 ${Math.round(timeout / 1000)} 秒。请检查模型服务状态、接口地址和网络。`,
+          code: 'UPSTREAM_TIMEOUT',
+        },
+        proxy: { mode: 'local', targetHost: target.host, path },
+      });
+      return;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const text = await upstream.text();
+  const providerTimeout = parseProviderTimeout(text);
+  if (providerTimeout) {
+    sendJson(res, 504, {
+      error: {
+        message: `上游模型网关超时：${providerTimeout}。建议使用“兼容纯 JSON”或缩短提示词后重试。`,
+        code: 'PROVIDER_TIMEOUT',
+      },
+      proxy: { mode: 'local', targetHost: target.host, path, upstreamStatus: upstream.status },
+    });
+    return;
+  }
+
+  if (upstream.ok && !text.trim()) {
+    sendJson(res, 502, {
+      error: {
+        message: '上游模型服务返回了空响应。请检查模型名、接口类型，或改用“兼容纯 JSON”后重新测试连接。',
+        code: 'EMPTY_UPSTREAM_RESPONSE',
+      },
+      proxy: { mode: 'local', targetHost: target.host, path, upstreamStatus: upstream.status },
+    });
+    return;
+  }
+
   res.writeHead(upstream.status, {
     'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
   });
@@ -159,7 +236,7 @@ const server = http.createServer(async (req, res) => {
       await handleProxy(req, res);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 500, { error: { message } });
+      sendJson(res, 500, { error: { message, code: 'PROXY_ERROR' } });
     }
     return;
   }

@@ -1,4 +1,5 @@
 export type ApiMode = 'chat_completions' | 'responses';
+export type OutputFormatMode = 'auto' | 'json_schema' | 'json_object' | 'plain_json';
 export type ConnectionMode = 'direct' | 'cloud_proxy' | 'local_proxy';
 export type PinKind = 'exec' | 'data';
 export type AdviceLevel = 'note' | 'warning' | 'tip';
@@ -128,6 +129,8 @@ export interface AppConfig {
   apiKey: string;
   model: string;
   apiMode: ApiMode;
+  outputFormatMode: OutputFormatMode;
+  requestTimeoutMs: number;
   localProxyUrl: string;
   blueprintType: string;
   ueVersion: string;

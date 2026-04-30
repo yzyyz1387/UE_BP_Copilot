@@ -112,7 +112,20 @@ Vercel Serverless 入口：
 api/chat-proxy.js
 ```
 
-它只允许转发 `chat/completions` 与 `responses` 两个路径；云端中转只允许 `https://` 模型接口，并拒绝 localhost / 内网地址，避免被当作任意开放代理。
+它只允许转发 `chat/completions` 与 `responses` 两个路径；云端中转只允许 `https://` 模型接口，并拒绝 localhost / 内网地址，避免被当作任意开放代理。中转函数带 55 秒上游超时保护，`vercel.json` 已为 `api/chat-proxy.js` 配置 `maxDuration: 60`。如果上游返回 `SocketTimeoutException` 或空响应，前端会显示更明确的网关/空响应错误，不再误报成单纯“模型返回为空”。
+
+### 输出格式策略与连接测试
+
+AI 配置页新增“输出格式策略”：
+
+| 策略 | 行为 | 建议场景 |
+|---|---|---|
+| 自动选择 | 官方 OpenAI 优先使用 JSON Schema；第三方 OpenAI-compatible 默认走纯 JSON | 默认推荐 |
+| 兼容纯 JSON | 不发送 `response_format` / `json_schema`，只靠提示词要求返回 JSON | LongCat、DeepSeek、其它兼容接口出现超时或后台 token 不变时优先使用 |
+| JSON Object | 发送 `response_format: { type: "json_object" }` | 确认服务商支持 json_object 时使用 |
+| 严格 JSON Schema | 发送完整结构化 schema | 官方 OpenAI 或确认兼容 schema 的服务 |
+
+如果云端中转长时间无响应，先点“测试连接”。测试连接只会发送一个很小的“只返回 OK”请求；如果测试也不增加模型后台 token 用量，说明请求没有真正进入模型推理，通常是接口地址、模型名、Key、服务商网关或 Vercel 出口网络问题。
 
 ---
 

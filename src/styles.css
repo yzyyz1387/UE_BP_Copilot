@@ -2786,3 +2786,37 @@ textarea {
   border-color: rgba(89, 192, 255, 0.62);
   box-shadow: 0 0 0 2px rgba(89, 192, 255, 0.08);
 }
+
+.form-field small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #0d131a;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.secondary-button {
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid rgba(74, 163, 255, 0.45);
+  border-radius: var(--radius);
+  background: #142536;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}

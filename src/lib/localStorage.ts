@@ -90,6 +90,8 @@ export function loadStoredConfig(defaultConfig: AppConfig): AppConfig {
     const parsed = JSON.parse(raw) as Partial<AppConfig>;
     const connectionModeCandidate = parsed.connectionMode;
     const apiModeCandidate = parsed.apiMode;
+    const outputFormatModeCandidate = parsed.outputFormatMode;
+    const requestTimeoutMsCandidate = Number(parsed.requestTimeoutMs);
     const connectionMode: AppConfig['connectionMode'] =
       connectionModeCandidate === 'direct' ||
       connectionModeCandidate === 'cloud_proxy' ||
@@ -100,12 +102,25 @@ export function loadStoredConfig(defaultConfig: AppConfig): AppConfig {
       apiModeCandidate === 'chat_completions' || apiModeCandidate === 'responses'
         ? apiModeCandidate
         : defaultConfig.apiMode;
+    const outputFormatMode: AppConfig['outputFormatMode'] =
+      outputFormatModeCandidate === 'auto' ||
+      outputFormatModeCandidate === 'json_schema' ||
+      outputFormatModeCandidate === 'json_object' ||
+      outputFormatModeCandidate === 'plain_json'
+        ? outputFormatModeCandidate
+        : defaultConfig.outputFormatMode;
+    const requestTimeoutMs =
+      Number.isFinite(requestTimeoutMsCandidate) && requestTimeoutMsCandidate >= 10000
+        ? Math.min(Math.max(requestTimeoutMsCandidate, 10000), 180000)
+        : defaultConfig.requestTimeoutMs;
 
     return {
       ...defaultConfig,
       ...parsed,
       connectionMode,
       apiMode,
+      outputFormatMode,
+      requestTimeoutMs,
       localProxyUrl:
         typeof parsed.localProxyUrl === 'string' && parsed.localProxyUrl.trim()
           ? parsed.localProxyUrl

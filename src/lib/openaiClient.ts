@@ -12,15 +12,26 @@ interface GenerateArgs {
 }
 
 type OpenAiPath = 'responses' | 'chat/completions';
+type OutputFlavor = 'json_schema' | 'json_object' | 'plain_json';
 
 interface ProxyPayload {
   baseUrl: string;
   apiKey: string;
   path: OpenAiPath;
   body: unknown;
+  timeoutMs?: number;
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  message: string;
+  endpointLabel: string;
+  rawText: string;
 }
 
 const LOCAL_PROXY_FALLBACK_URL = 'http://127.0.0.1:8787';
+const MIN_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_REQUEST_TIMEOUT_MS = 180_000;
 
 function normalizeOpenAiBaseUrl(baseUrl: string): string {
   return baseUrl
@@ -44,6 +55,13 @@ function connectionModeLabel(config: AppConfig): string {
   return '浏览器直连';
 }
 
+function outputModeLabel(config: AppConfig): string {
+  if (config.outputFormatMode === 'json_schema') return '严格 JSON Schema';
+  if (config.outputFormatMode === 'json_object') return 'JSON Object';
+  if (config.outputFormatMode === 'plain_json') return '兼容纯 JSON';
+  return '自动选择';
+}
+
 function getProxyEndpoint(config: AppConfig): string {
   if (config.connectionMode === 'cloud_proxy') {
     return '/api/chat-proxy';
@@ -52,14 +70,118 @@ function getProxyEndpoint(config: AppConfig): string {
   return joinPlainUrl(config.localProxyUrl.trim() || LOCAL_PROXY_FALLBACK_URL, 'proxy/openai');
 }
 
-async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
+function getRequestTimeoutMs(config: AppConfig): number {
+  const candidate = Number(config.requestTimeoutMs);
+  if (!Number.isFinite(candidate)) return 60_000;
+  return Math.min(Math.max(candidate, MIN_REQUEST_TIMEOUT_MS), MAX_REQUEST_TIMEOUT_MS);
+}
+
+function isLikelyOfficialOpenAiBaseUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(normalizeOpenAiBaseUrl(baseUrl));
+    return url.hostname === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
+function dedupeFlavors(flavors: OutputFlavor[]): OutputFlavor[] {
+  return Array.from(new Set(flavors));
+}
+
+function getOutputFlavors(config: AppConfig, path: OpenAiPath): OutputFlavor[] {
+  const withFallback = (primary: OutputFlavor, fallback: OutputFlavor[]): OutputFlavor[] =>
+    config.allowJsonFallback ? dedupeFlavors([primary, ...fallback]) : [primary];
+
+  if (config.outputFormatMode === 'plain_json') {
+    return ['plain_json'];
+  }
+
+  if (path === 'responses') {
+    if (config.outputFormatMode === 'json_schema') {
+      return withFallback('json_schema', ['plain_json']);
+    }
+    // Responses API 没有通用 json_object 兼容参数；第三方兼容服务直接走纯 JSON 最稳。
+    if (config.outputFormatMode === 'json_object') {
+      return ['plain_json'];
+    }
+    return isLikelyOfficialOpenAiBaseUrl(config.baseUrl)
+      ? withFallback('json_schema', ['plain_json'])
+      : ['plain_json'];
+  }
+
+  if (config.outputFormatMode === 'json_schema') {
+    return withFallback('json_schema', ['json_object', 'plain_json']);
+  }
+
+  if (config.outputFormatMode === 'json_object') {
+    return withFallback('json_object', ['plain_json']);
+  }
+
+  // 自动模式：官方 OpenAI 优先严格结构化；第三方 OpenAI-compatible 默认不要发送 response_format，避免网关超时。
+  return isLikelyOfficialOpenAiBaseUrl(config.baseUrl)
+    ? withFallback('json_schema', ['json_object', 'plain_json'])
+    : ['plain_json'];
+}
+
+function flavorLabel(flavor: OutputFlavor): string {
+  if (flavor === 'json_schema') return 'workspace schema';
+  if (flavor === 'json_object') return 'workspace json_object fallback';
+  return 'workspace plain-json fallback';
+}
+
+function providerErrorMessage(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const payload = parsed as {
+    error?: { message?: string; code?: string | number; type?: string } | string;
+    code?: string | number;
+    message?: string;
+    data?: string;
+    choices?: unknown;
+    output?: unknown;
+    output_text?: unknown;
+  };
+
+  if (payload.choices || payload.output || payload.output_text) {
+    return null;
+  }
+
+  if (typeof payload.error === 'string' && payload.error.trim()) {
+    return payload.error.trim();
+  }
+
+  if (payload.error && typeof payload.error === 'object' && payload.error.message) {
+    const code = payload.error.code ? `（${payload.error.code}）` : '';
+    return `${payload.error.message}${code}`;
+  }
+
+  if (payload.message && (payload.code !== undefined || payload.data)) {
+    const code = payload.code !== undefined ? `code=${payload.code}` : '';
+    const data = payload.data ? `，data=${payload.data}` : '';
+    return `${payload.message}${code || data ? `（${code}${data}）` : ''}`;
+  }
+
+  return null;
+}
+
+async function fetchJson(url: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
   let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    response = await fetch(url, init);
+    response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
   } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）。如果使用云端中转，请优先把“输出格式策略”改成“兼容纯 JSON”，或切换到本地代理。`);
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(message || '网络请求失败。');
+  } finally {
+    clearTimeout(timeout);
   }
 
   const text = await response.text();
@@ -71,13 +193,15 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
     parsed = null;
   }
 
-  if (!response.ok) {
+  const providerError = providerErrorMessage(parsed);
+  if (!response.ok || providerError) {
     const errorMessage =
+      providerError ??
       (parsed as { error?: { message?: string } } | null)?.error?.message ??
       (parsed as { message?: string } | null)?.message ??
       text ??
       `HTTP ${response.status}`;
-    throw new Error(errorMessage);
+    throw new Error(errorMessage || `HTTP ${response.status}`);
   }
 
   return parsed ?? {};
@@ -85,6 +209,7 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
 
 async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown): Promise<unknown> {
   const apiKey = config.apiKey.trim();
+  const timeoutMs = getRequestTimeoutMs(config);
 
   if (config.connectionMode === 'direct') {
     return fetchJson(joinUrl(config.baseUrl, path), {
@@ -94,7 +219,7 @@ async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown)
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-    });
+    }, timeoutMs);
   }
 
   const payload: ProxyPayload = {
@@ -102,6 +227,7 @@ async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown)
     apiKey,
     path,
     body,
+    timeoutMs,
   };
 
   return fetchJson(getProxyEndpoint(config), {
@@ -110,7 +236,7 @@ async function postModelJson(config: AppConfig, path: OpenAiPath, body: unknown)
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
-  });
+  }, timeoutMs + 5_000);
 }
 
 function extractJsonString(text: string): string {
@@ -147,6 +273,9 @@ function parseWorkspaceResponse(rawText: string, structured?: unknown): Blueprin
 }
 
 function extractTextFromResponseApi(data: unknown): string {
+  const error = providerErrorMessage(data);
+  if (error) throw new Error(error);
+
   const payload = data as {
     output_text?: string;
     output?: Array<{
@@ -175,6 +304,9 @@ function extractTextFromResponseApi(data: unknown): string {
 }
 
 function extractTextFromChatCompletions(data: unknown): string {
+  const error = providerErrorMessage(data);
+  if (error) throw new Error(error);
+
   const payload = data as {
     choices?: Array<{
       message?: {
@@ -186,10 +318,12 @@ function extractTextFromChatCompletions(data: unknown): string {
               content?: string;
             }>;
       };
+      text?: string;
     }>;
   };
 
-  const message = payload.choices?.[0]?.message;
+  const choice = payload.choices?.[0];
+  const message = choice?.message;
   if (typeof message?.refusal === 'string' && message.refusal) {
     throw new Error(`模型拒绝返回结构化结果：${message.refusal}`);
   }
@@ -203,6 +337,10 @@ function extractTextFromChatCompletions(data: unknown): string {
       .map((item) => item.text ?? item.content ?? '')
       .join('\n')
       .trim();
+  }
+
+  if (typeof choice?.text === 'string') {
+    return choice.text;
   }
 
   return '';
@@ -226,9 +364,17 @@ function buildCompatPrompt(prompt: string): string {
 }
 
 function getTroubleshootingText(config: AppConfig): string {
+  const common = [
+    `输出格式策略：${outputModeLabel(config)}。`,
+    config.outputFormatMode === 'auto'
+      ? '自动模式下，第三方 OpenAI-compatible 接口默认走“兼容纯 JSON”，不会发送 response_format/json_schema。'
+      : '',
+  ].filter(Boolean);
+
   if (config.connectionMode === 'direct') {
     return [
       '当前连接方式：浏览器直连。',
+      ...common,
       '如果浏览器控制台出现 CORS / preflight / No Access-Control-Allow-Origin，请切换到“云端中转”或“本地代理”。',
       '直连模式要求模型服务商允许网页跨域请求，而且密钥会暴露在浏览器 DevTools 中，只建议个人本地测试。',
     ].join('\n');
@@ -237,13 +383,16 @@ function getTroubleshootingText(config: AppConfig): string {
   if (config.connectionMode === 'cloud_proxy') {
     return [
       '当前连接方式：云端中转。',
+      ...common,
       '请确认接口地址是 OpenAI-compatible 的 /v1 根地址，例如 https://api.example.com/v1。',
+      '如果模型后台 token 用量没有变化，通常表示请求卡在兼容网关或中转到上游之间；请优先使用“兼容纯 JSON”并点“测试连接”。',
       '本站中转函数只转发本次请求，前端代码不会保存密钥；但密钥会经过本站 Serverless。',
     ].join('\n');
   }
 
   return [
     '当前连接方式：本地代理。',
+    ...common,
     '请先下载并运行本地代理，然后确认代理地址是 http://127.0.0.1:8787。',
     '如果仍然失败，请检查本地代理终端日志、模型接口地址、模型名和密钥。',
   ].join('\n');
@@ -252,18 +401,13 @@ function getTroubleshootingText(config: AppConfig): string {
 function decorateError(error: unknown, endpointLabel: string, config: AppConfig): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(
-    `${message}\n\n请求方式：${connectionModeLabel(config)} · ${endpointLabel}\n可排查：\n1. 接口地址是否写成完整的 /v1 根地址\n2. 模型名是否可用\n3. 该兼容服务是否支持结构化输出\n4. ${getTroubleshootingText(config)}`,
+    `${message}\n\n请求方式：${connectionModeLabel(config)} · ${endpointLabel}\n可排查：\n1. 接口地址是否写成完整的 /v1 根地址\n2. 模型名是否可用\n3. 第三方兼容服务是否支持 response_format；不确定时用“兼容纯 JSON”\n4. 当前请求是否在 ${Math.round(getRequestTimeoutMs(config) / 1000)} 秒内返回\n5. ${getTroubleshootingText(config)}`,
   );
 }
 
-async function requestByResponses(
-  config: AppConfig,
-  prompt: string,
-): Promise<GenerationResult> {
-  const path: OpenAiPath = 'responses';
-
-  try {
-    const data = (await postModelJson(config, path, {
+function buildResponseApiBody(config: AppConfig, prompt: string, flavor: OutputFlavor): unknown {
+  if (flavor === 'json_schema') {
+    return {
       model: config.model,
       input: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -277,56 +421,32 @@ async function requestByResponses(
           schema: UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA,
         },
       },
-    })) as {
-      output_parsed?: unknown;
-      output_text?: string;
-      output?: unknown[];
     };
-
-    const response = parseWorkspaceResponse(extractTextFromResponseApi(data), data.output_parsed);
-    return {
-      response,
-      rawText: JSON.stringify(data.output_parsed ?? response, null, 2),
-      endpointLabel: `${connectionModeLabel(config)} · /responses · workspace schema`,
-    };
-  } catch (error) {
-    if (!config.allowJsonFallback) {
-      throw decorateError(error, '/responses · workspace schema', config);
-    }
   }
 
-  try {
-    const fallbackData = await postModelJson(config, path, {
-      model: config.model,
-      input: [
-        {
-          role: 'system',
-          content: `${SYSTEM_PROMPT}\n你当前运行在兼容模式下，必须只返回 JSON 对象。`,
-        },
-        { role: 'user', content: buildCompatPrompt(prompt) },
-      ],
-    });
-
-    const rawText = extractTextFromResponseApi(fallbackData);
-    const response = parseWorkspaceResponse(rawText);
-    return {
-      response,
-      rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: `${connectionModeLabel(config)} · /responses · workspace json fallback`,
-    };
-  } catch (error) {
-    throw decorateError(error, '/responses · workspace json fallback', config);
-  }
+  return {
+    model: config.model,
+    input: [
+      {
+        role: 'system',
+        content: `${SYSTEM_PROMPT}\n你当前运行在兼容纯 JSON 模式下，必须只返回 JSON 对象，不要输出 Markdown。`,
+      },
+      { role: 'user', content: buildCompatPrompt(prompt) },
+    ],
+  };
 }
 
-async function requestByChatCompletions(
-  config: AppConfig,
-  prompt: string,
-): Promise<GenerationResult> {
-  const path: OpenAiPath = 'chat/completions';
+function buildChatCompletionsBody(config: AppConfig, prompt: string, flavor: OutputFlavor): unknown {
+  const compatMessages = [
+    {
+      role: 'system',
+      content: `${SYSTEM_PROMPT}\n你当前运行在兼容模式下，必须只返回 JSON 对象，不要输出 Markdown。`,
+    },
+    { role: 'user', content: buildCompatPrompt(prompt) },
+  ];
 
-  try {
-    const data = await postModelJson(config, path, {
+  if (flavor === 'json_schema') {
+    return {
       model: config.model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -340,68 +460,135 @@ async function requestByChatCompletions(
           schema: UE_BLUEPRINT_WORKSPACE_RESPONSE_SCHEMA,
         },
       },
-    });
-
-    const rawText = extractTextFromChatCompletions(data);
-    const response = parseWorkspaceResponse(rawText);
-    return {
-      response,
-      rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: `${connectionModeLabel(config)} · /chat/completions · workspace schema`,
     };
-  } catch (error) {
-    if (!config.allowJsonFallback) {
-      throw decorateError(error, '/chat/completions · workspace schema', config);
-    }
   }
 
-  try {
-    const jsonObjectData = await postModelJson(config, path, {
+  if (flavor === 'json_object') {
+    return {
       model: config.model,
-      messages: [
-        {
-          role: 'system',
-          content: `${SYSTEM_PROMPT}\n你当前运行在兼容模式下，必须只返回 JSON 对象。`,
-        },
-        { role: 'user', content: buildCompatPrompt(prompt) },
-      ],
+      messages: compatMessages,
       response_format: {
         type: 'json_object',
       },
-    });
-
-    const rawText = extractTextFromChatCompletions(jsonObjectData);
-    const response = parseWorkspaceResponse(rawText);
-    return {
-      response,
-      rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: `${connectionModeLabel(config)} · /chat/completions · workspace json_object fallback`,
     };
-  } catch {
-    // ignore and try plain fallback
   }
 
-  try {
-    const plainData = await postModelJson(config, path, {
-      model: config.model,
-      messages: [
-        {
-          role: 'system',
-          content: `${SYSTEM_PROMPT}\n你当前运行在兼容模式下，必须只返回 JSON 对象。`,
-        },
-        { role: 'user', content: buildCompatPrompt(prompt) },
-      ],
-    });
+  return {
+    model: config.model,
+    messages: compatMessages,
+  };
+}
 
-    const rawText = extractTextFromChatCompletions(plainData);
-    const response = parseWorkspaceResponse(rawText);
+function shouldStopAfterFirstFailure(config: AppConfig, flavors: OutputFlavor[], index: number): boolean {
+  return !config.allowJsonFallback || index >= flavors.length - 1;
+}
+
+async function requestByResponses(
+  config: AppConfig,
+  prompt: string,
+): Promise<GenerationResult> {
+  const path: OpenAiPath = 'responses';
+  const flavors = getOutputFlavors(config, path);
+  const failures: string[] = [];
+
+  for (let i = 0; i < flavors.length; i += 1) {
+    const flavor = flavors[i];
+    try {
+      const data = (await postModelJson(config, path, buildResponseApiBody(config, prompt, flavor))) as {
+        output_parsed?: unknown;
+        output_text?: string;
+        output?: unknown[];
+      };
+
+      const rawText = extractTextFromResponseApi(data);
+      const response = parseWorkspaceResponse(rawText, flavor === 'json_schema' ? data.output_parsed : undefined);
+      return {
+        response,
+        rawText: rawText || JSON.stringify(data.output_parsed ?? response, null, 2),
+        endpointLabel: `${connectionModeLabel(config)} · /responses · ${flavorLabel(flavor)}`,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`${flavorLabel(flavor)}：${message}`);
+      if (shouldStopAfterFirstFailure(config, flavors, i)) {
+        throw decorateError(new Error(failures.join('\n')), `/responses · ${flavorLabel(flavor)}`, config);
+      }
+    }
+  }
+
+  throw decorateError(new Error(failures.join('\n') || '请求失败'), '/responses', config);
+}
+
+async function requestByChatCompletions(
+  config: AppConfig,
+  prompt: string,
+): Promise<GenerationResult> {
+  const path: OpenAiPath = 'chat/completions';
+  const flavors = getOutputFlavors(config, path);
+  const failures: string[] = [];
+
+  for (let i = 0; i < flavors.length; i += 1) {
+    const flavor = flavors[i];
+    try {
+      const data = await postModelJson(config, path, buildChatCompletionsBody(config, prompt, flavor));
+      const rawText = extractTextFromChatCompletions(data);
+      const response = parseWorkspaceResponse(rawText);
+      return {
+        response,
+        rawText: rawText || JSON.stringify(response, null, 2),
+        endpointLabel: `${connectionModeLabel(config)} · /chat/completions · ${flavorLabel(flavor)}`,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`${flavorLabel(flavor)}：${message}`);
+      if (shouldStopAfterFirstFailure(config, flavors, i)) {
+        throw decorateError(new Error(failures.join('\n')), `/chat/completions · ${flavorLabel(flavor)}`, config);
+      }
+    }
+  }
+
+  throw decorateError(new Error(failures.join('\n') || '请求失败'), '/chat/completions', config);
+}
+
+export async function testModelConnection(config: AppConfig): Promise<ConnectionTestResult> {
+  const path: OpenAiPath = config.apiMode === 'responses' ? 'responses' : 'chat/completions';
+
+  try {
+    const data = await postModelJson(
+      config,
+      path,
+      path === 'responses'
+        ? {
+            model: config.model,
+            input: [
+              { role: 'system', content: '你是接口连通性测试器，只返回 OK。' },
+              { role: 'user', content: '请只返回 OK 两个字。' },
+            ],
+            max_output_tokens: 16,
+          }
+        : {
+            model: config.model,
+            messages: [
+              { role: 'system', content: '你是接口连通性测试器，只返回 OK。' },
+              { role: 'user', content: '请只返回 OK 两个字。' },
+            ],
+            max_tokens: 16,
+          },
+    );
+
+    const rawText = path === 'responses' ? extractTextFromResponseApi(data) : extractTextFromChatCompletions(data);
+    if (!rawText.trim()) {
+      throw new Error('连接测试有 HTTP 响应，但模型内容为空。请检查模型名，或尝试切换 chat/completions 与 responses。');
+    }
+
     return {
-      response,
-      rawText: rawText || JSON.stringify(response, null, 2),
-      endpointLabel: `${connectionModeLabel(config)} · /chat/completions · workspace plain-json fallback`,
+      ok: true,
+      message: `连接测试成功，模型返回：${rawText.trim().slice(0, 80)}`,
+      endpointLabel: `${connectionModeLabel(config)} · /${path} · connection test`,
+      rawText,
     };
   } catch (error) {
-    throw decorateError(error, '/chat/completions · workspace fallback', config);
+    throw decorateError(error, `/${path} · connection test`, config);
   }
 }
 

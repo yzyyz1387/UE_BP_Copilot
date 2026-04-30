@@ -5,6 +5,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ];
+const MIN_TIMEOUT_MS = 5_000;
+const MAX_TIMEOUT_MS = 55_000;
 
 function getAllowedOrigins() {
   const fromEnv = (process.env.ALLOWED_ORIGINS || '')
@@ -22,6 +24,8 @@ function setCors(req, res) {
   }
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-UE-BP-Proxy', 'cloud');
 }
 
 function sendJson(res, status, payload) {
@@ -134,7 +138,35 @@ function buildTargetUrl(baseUrl, path) {
     throw new Error('云端中转不能请求 localhost 或内网地址。请使用本地代理模式。');
   }
 
-  return `${normalizedBaseUrl}/${path}`;
+  return {
+    url: `${normalizedBaseUrl}/${path}`,
+    host: url.hostname,
+  };
+}
+
+function clampTimeoutMs(value) {
+  const candidate = Number(value);
+  if (!Number.isFinite(candidate)) return 45_000;
+  return Math.min(Math.max(candidate, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
+}
+
+function parseProviderTimeout(text) {
+  if (!text || !text.trim().startsWith('{')) return null;
+  try {
+    const payload = JSON.parse(text);
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      payload.code !== undefined &&
+      typeof payload.message === 'string' &&
+      /timeout|timed out|SocketTimeoutException/i.test(`${payload.message} ${payload.data || ''}`)
+    ) {
+      return `${payload.message}${payload.data ? `（${payload.data}）` : ''}`;
+    }
+  } catch {
+    // ignore non-json upstream body
+  }
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -157,9 +189,13 @@ export default async function handler(req, res) {
     return;
   }
 
+  let targetHost = '';
+  let path = '';
+
   try {
     const payload = await readBody(req);
-    const { baseUrl, apiKey, path, body } = payload || {};
+    const { baseUrl, apiKey, body, timeoutMs } = payload || {};
+    path = payload?.path;
 
     if (!apiKey || typeof apiKey !== 'string') {
       sendJson(res, 400, { error: { message: '缺少 API Key。' } });
@@ -171,22 +207,71 @@ export default async function handler(req, res) {
       return;
     }
 
-    const targetUrl = buildTargetUrl(baseUrl, path);
-    const upstream = await fetch(targetUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const target = buildTargetUrl(baseUrl, path);
+    targetHost = target.host;
+    const timeout = clampTimeoutMs(timeoutMs);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+
+    let upstream;
+    try {
+      upstream = await fetch(target.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        sendJson(res, 504, {
+          error: {
+            message: `云端中转等待上游模型服务超过 ${Math.round(timeout / 1000)} 秒。请求可能没有进入模型推理；请尝试“兼容纯 JSON”、缩短提示词，或切换本地代理。`,
+            code: 'UPSTREAM_TIMEOUT',
+          },
+          proxy: { mode: 'cloud', targetHost, path },
+        });
+        return;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
 
     const text = await upstream.text();
+    const providerTimeout = parseProviderTimeout(text);
+    if (providerTimeout) {
+      sendJson(res, 504, {
+        error: {
+          message: `上游模型网关超时：${providerTimeout}。如果后台 token 用量没有变化，说明请求大概率卡在模型服务网关，建议改用“兼容纯 JSON”或本地代理。`,
+          code: 'PROVIDER_TIMEOUT',
+        },
+        proxy: { mode: 'cloud', targetHost, path, upstreamStatus: upstream.status },
+      });
+      return;
+    }
+
+    if (upstream.ok && !text.trim()) {
+      sendJson(res, 502, {
+        error: {
+          message: '上游模型服务返回了空响应。请检查模型名、接口类型，或改用“兼容纯 JSON”后重新测试连接。',
+          code: 'EMPTY_UPSTREAM_RESPONSE',
+        },
+        proxy: { mode: 'cloud', targetHost, path, upstreamStatus: upstream.status },
+      });
+      return;
+    }
+
     res.statusCode = upstream.status;
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json; charset=utf-8');
     res.end(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sendJson(res, 500, { error: { message } });
+    sendJson(res, 500, {
+      error: { message, code: 'PROXY_ERROR' },
+      proxy: { mode: 'cloud', targetHost, path },
+    });
   }
 }

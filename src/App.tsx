@@ -17,7 +17,7 @@ import {
   storePlan,
 } from './lib/localStorage';
 import { normalizeBlueprintPlan } from './lib/blueprintTransform';
-import { generateBlueprintPlan } from './lib/openaiClient';
+import { generateBlueprintPlan, testModelConnection } from './lib/openaiClient';
 import { buildExternalPromptTemplate } from './lib/prompt';
 import { normalizeBlueprintWorkspaceResponse } from './lib/workspaceResponse';
 import type {
@@ -37,6 +37,8 @@ const DEFAULT_CONFIG: AppConfig = {
   apiKey: '',
   model: 'gpt-4o',
   apiMode: 'chat_completions',
+  outputFormatMode: 'auto',
+  requestTimeoutMs: 60000,
   localProxyUrl: 'http://127.0.0.1:8787',
   blueprintType: 'Actor',
   ueVersion: 'UE 5.3+',
@@ -227,6 +229,7 @@ export default function App() {
   const [importText, setImportText] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>(() => getProjectChatMessages(initialProject, initialPlan));
   const [busy, setBusy] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
   const [statusText, setStatusText] = useState('本地优先 · 支持直连 / 云端中转 / 本地代理');
   const [endpointLabel, setEndpointLabel] = useState('');
 
@@ -702,6 +705,29 @@ export default function App() {
     setStatusText('会话已清空');
   };
 
+  const handleTestConnection = async () => {
+    if (!config.apiKey.trim()) {
+      showToast('请先在右侧接口设置中填写密钥。', 'error');
+      return;
+    }
+
+    setTestingConnection(true);
+    setStatusText('正在测试模型连接...');
+
+    try {
+      const result = await testModelConnection(config);
+      showToast(result.message, 'success');
+      setEndpointLabel(result.endpointLabel);
+      setStatusText('连接测试成功');
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '连接测试失败';
+      showToast(message, 'error');
+      setStatusText('连接测试失败');
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
   const handleSend = async () => {
     const userPrompt = prompt.trim();
     if (!userPrompt) { showToast('请先输入你想生成的蓝图需求。', 'error'); return; }
@@ -811,7 +837,12 @@ export default function App() {
 
           {rightPanelTab === 'ai' ? (
             <div className="right-pane__page right-pane__scroll">
-              <SettingsPanel config={config} onChange={handleConfigChange} />
+              <SettingsPanel
+                config={config}
+                testingConnection={testingConnection}
+                onChange={handleConfigChange}
+                onTestConnection={handleTestConnection}
+              />
               <ImportPanel
                 importText={importText}
                 externalPrompt={externalPrompt}

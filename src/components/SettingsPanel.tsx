@@ -2,7 +2,9 @@ import type { AppConfig, ConnectionMode } from '../types';
 
 interface SettingsPanelProps {
   config: AppConfig;
+  testingConnection?: boolean;
   onChange: (patch: Partial<AppConfig>) => void;
+  onTestConnection?: () => void;
 }
 
 const CONNECTION_MODES: Array<{
@@ -35,6 +37,37 @@ const CONNECTION_MODES: Array<{
   },
 ];
 
+const OUTPUT_FORMAT_OPTIONS: Array<{
+  value: AppConfig['outputFormatMode'];
+  title: string;
+  hint: string;
+}> = [
+  {
+    value: 'auto',
+    title: '自动选择',
+    hint: '官方 OpenAI 优先严格结构化；第三方兼容接口默认纯 JSON。',
+  },
+  {
+    value: 'plain_json',
+    title: '兼容纯 JSON',
+    hint: '不发送 response_format，最适合 LongCat、DeepSeek 等兼容接口排查超时。',
+  },
+  {
+    value: 'json_object',
+    title: 'JSON Object',
+    hint: '发送 response_format=json_object，部分兼容服务支持。',
+  },
+  {
+    value: 'json_schema',
+    title: '严格 JSON Schema',
+    hint: '结构最稳定，但很多兼容接口不支持，可能导致上游超时。',
+  },
+];
+
+function getOutputFormatHint(mode: AppConfig['outputFormatMode']): string {
+  return OUTPUT_FORMAT_OPTIONS.find((item) => item.value === mode)?.hint ?? OUTPUT_FORMAT_OPTIONS[0].hint;
+}
+
 function getModeInfo(mode: ConnectionMode) {
   return CONNECTION_MODES.find((item) => item.value === mode) ?? CONNECTION_MODES[0];
 }
@@ -45,7 +78,7 @@ function getModeAlertClass(mode: ConnectionMode): string {
   return 'inline-alert inline-alert--success';
 }
 
-export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
+export function SettingsPanel({ config, testingConnection = false, onChange, onTestConnection }: SettingsPanelProps) {
   const currentMode = getModeInfo(config.connectionMode);
 
   const handleModeChange = (mode: ConnectionMode) => {
@@ -129,6 +162,36 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
           </select>
         </label>
 
+        <label className="form-field form-field--full">
+          <span>输出格式策略</span>
+          <select
+            value={config.outputFormatMode}
+            onChange={(event) =>
+              onChange({
+                outputFormatMode: event.target.value as AppConfig['outputFormatMode'],
+              })
+            }
+          >
+            {OUTPUT_FORMAT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.title}</option>
+            ))}
+          </select>
+          <small>{getOutputFormatHint(config.outputFormatMode)}</small>
+        </label>
+
+        <label className="form-field">
+          <span>请求超时</span>
+          <select
+            value={String(config.requestTimeoutMs)}
+            onChange={(event) => onChange({ requestTimeoutMs: Number(event.target.value) })}
+          >
+            <option value="30000">30 秒</option>
+            <option value="60000">60 秒</option>
+            <option value="90000">90 秒</option>
+            <option value="120000">120 秒</option>
+          </select>
+        </label>
+
         {config.connectionMode === 'local_proxy' ? (
           <label className="form-field form-field--full">
             <span>本地代理地址</span>
@@ -139,6 +202,18 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
             />
           </label>
         ) : null}
+      </div>
+
+      <div className="settings-actions">
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onTestConnection}
+          disabled={!onTestConnection || testingConnection}
+        >
+          {testingConnection ? '测试中...' : '测试连接'}
+        </button>
+        <span>测试会发送一个极小的“只返回 OK”请求，用来判断是否真的进入模型服务。</span>
       </div>
 
       <div className="toggle-row">
